@@ -250,11 +250,11 @@ void SrApp::OnPreSetup(rex::RuntimeConfig& config) {
   // formats lose their data. sr1.toml / sr2.toml can set render_target_path_vulkan = "host".
   if (!rex::cvar::HasNonDefaultValue("render_target_path_vulkan"))
     rex::cvar::SetLaunchFlag("render_target_path_vulkan", "fsi");
-  // Occlusion queries answered with Xenia's default fake count, not the host's: each real one
-  // made the GPU thread wait for the PS5's GPU (Saints Row 2's gameplay: half the thread's time
-  // in CompleteOcclusionQueries).
+  // Occlusion queries answered by the PS5's GPU (Prototype faked them, for speed): Saints Row 2
+  // asks whether a light's glow is hidden by what's in front of it, and the fake "visible" count
+  // drew every glow through people and walls. sr1.toml / sr2.toml can set occlusion_query_enable.
   if (!rex::cvar::HasNonDefaultValue("occlusion_query_enable"))
-    rex::cvar::SetLaunchFlag("occlusion_query_enable", "false");
+    rex::cvar::SetLaunchFlag("occlusion_query_enable", "true");
   // As Max Payne 3 RePrescribed: frames with a pipeline still being built are shown (not
   // skipped), and three creation threads, not 3/4 of the CPUs, so a burst of new pipelines in a
   // new area doesn't starve the game's threads.

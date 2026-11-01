@@ -70,3 +70,14 @@ large_function_threshold = 1048576
 # Saints Row 2 called 823C88B0 through a vtable and stopped: "call to unregistered function".
 "0x8222F400" = {}
 "0x8222F418" = {}
+
+# Functions only reached through a table of pointers (a vtable) right after a blr/bctr/b,
+# missed by the analyzer (Extras/tmp/vt.sh; Saints Row stopped on 8212E9C0 starting a new game).
+"0x8212E9C0" = {}
+"0x82715B44" = {}
+"0x82722998" = {}
+"0x82725A8C" = {}
+"0x82725AA8" = {}
+"0x8272FEC8" = {}
+"0x82731630" = {}
+"0x827317A8" = {}

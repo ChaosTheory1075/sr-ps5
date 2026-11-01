@@ -100,3 +100,14 @@ large_function_threshold = 1048576
 "0x8225FF24" = {}
 "0x8225FF2C" = {}
 "0x823C88B0" = {}
+
+# Functions only reached through a table of pointers (a vtable) right after a blr/bctr/b,
+# missed by the analyzer (Extras/tmp/vt.sh; Saints Row stopped on 8212E9C0 starting a new game).
+"0x822D5FC0" = {}
+"0x82A8B324" = {}
+"0x82A9B1D0" = {}
+"0x82A9CBA0" = {}
+"0x82A9CBBC" = {}
+"0x82AA8630" = {}
+"0x82AA9DD4" = {}
+"0x82AA9F4C" = {}
