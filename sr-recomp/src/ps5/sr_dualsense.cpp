@@ -25,8 +25,8 @@ void StartDualSense(int game) {
   sony::GameState state{};
   state.active = true;
   state.custom = true;
-  state.color = game == 2 ? std::array<uint8_t, 3>{255, 64, 0} : std::array<uint8_t, 3>{200, 16, 16};
-  state.sprint = 0.35f;
+  state.color = std::array<uint8_t, 3>{150, 40, 230};  // (the Saints' purple, both games)
+  state.sprint = 0.0f;  // (R2 fires in both games: no resistance on it)
   REXLOG_INFO("SAINTS ROW: ReInstated: DualSense light bar {:02X}{:02X}{:02X}, R2 resistance {:.2f}", state.color[0],
               state.color[1], state.color[2], state.sprint);
   // (the service's lease on a published state is 250 ms; the input driver reads it on SDL's clock)

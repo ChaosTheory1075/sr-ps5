@@ -599,10 +599,9 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
                        "The buttons the games show you - in hints, menus and moves - as the DualSense's (cross, "
                        "circle, square, triangle, L1, R1...) or as the Xbox 360's."};
     lines[kDualSense] = {"CONTROLLER", "DUALSENSE FEATURES", settings_.dualsense ? "ON" : "OFF", true,
-                         "The light bar in the game's colour, dimming as you're hurt and blinking when you're close "
-                         "to death, a pulse when you're hit, and a light resistance on R2, the sprint, while you play. "
-                         "The games' own rumble plays either way. (In the game: L3 + R3 opens the quick menu, with "
-                         "the cheats.)"};
+                         "The light bar in the Saints' purple, dimming as you're hurt and blinking when you're close "
+                         "to death, and a pulse when you're hit. The games' own rumble plays either way. (In the game: "
+                         "L3 + R3 opens the quick menu, with the cheats.)"};
     lines[kLanguage] = {"GAME", "LANGUAGE", Settings::kLanguages[Settings::LanguageIndex(settings_.language)].name,
                         true,
                         "The language of the games' text, menus and subtitles, as the Xbox 360's own language "
