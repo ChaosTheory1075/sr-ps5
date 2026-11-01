@@ -31,6 +31,8 @@
 #include SR_INIT_H
 
 REXCVAR_DECLARE(std::string, sr_fps_counter);
+REXCVAR_DEFINE_BOOL(sr_quick_menu, true, "SAINTS ROW",
+                    "L3 + R3 opens the in-game quick menu (the cheats); off: no menu, and no cheats");
 
 namespace srps5 {
 namespace {
@@ -87,7 +89,7 @@ void Filter(uint8_t* base, uint32_t state) {
   const bool combo_pressed = combo && (pressed & (kL3 | kR3));
   g_previous = buttons;
   if (!g_open.load(std::memory_order_relaxed)) {
-    if (combo_pressed) {
+    if (combo_pressed && REXCVAR_GET(sr_quick_menu)) {
       { std::lock_guard lock(g_mutex); g_events.clear(); }
       g_open.store(true, std::memory_order_release);
       REXLOG_INFO("Quick menu: open");

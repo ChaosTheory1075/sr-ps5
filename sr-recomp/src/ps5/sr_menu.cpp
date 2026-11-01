@@ -147,6 +147,9 @@ class Pad {
 // ---- the settings (app/menu.ini: key=value lines) ----
 
 struct Settings {
+  bool host_rts = false;       // EXPERIMENTAL RENDERER: FAST (host render targets) or ACCURATE (EDRAM, fsi)
+  bool cheat_menu = true;      // L3 + R3 opens the in-game quick menu (sr_quick_menu)
+  int dualsense_strength = 2;  // 1..3: low, medium, high (gta4_sony_intensity)
   int aa = 2;         // swap_post_effect: 0 none, 1 fxaa, 2 smaa (Max Payne 3 RePrescribed's)
   bool fsr = true;    // the picture's stretch to the TV: FSR 1 (present_effect fsr) or bilinear
   int sharpness = 3;  // FSR 1's sharpening (present_fsr_sharpness_reduction): 1 low, 2 medium, 3 high
@@ -193,6 +196,9 @@ struct Settings {
         const std::string k(key);
         if (k == "fxaa" && value) s.aa = 1;  // (the earlier on/off row's)
         if (k == "anti_aliasing") s.aa = std::clamp(value, 0, 2);
+        if (k == "renderer_fast") s.host_rts = value != 0;
+        if (k == "cheat_menu") s.cheat_menu = value != 0;
+        if (k == "dualsense_strength") s.dualsense_strength = std::clamp(value, 1, 3);
         if (k == "upscaling_fsr") s.fsr = value != 0;
         if (k == "fsr_sharpness") s.sharpness = std::clamp(value, 1, 3);
         if (k == "frame_rate") s.fps60 = value == 60;
@@ -215,10 +221,11 @@ struct Settings {
   void Save(const fs::path& app) const {
     if (std::FILE* f = std::fopen((app / "menu.ini").string().c_str(), "wb")) {
       std::fprintf(f,
-                   "anti_aliasing = %d\nupscaling_fsr = %d\nfsr_sharpness = %d\n"
+                   "anti_aliasing = %d\nupscaling_fsr = %d\nfsr_sharpness = %d\nrenderer_fast = %d\ncheat_menu = %d\n"
+                   "dualsense_strength = %d\n"
                    "texture_filtering = %d\ngpu_lane = %d\nmenu_music = %d\ngame = %d\nfps_counter = %d\n"
                    "dualsense = %d\nps_prompts = %d\nskip_intro = %d\nradnet = %d\nframe_rate = %d\nlanguage = %d\n",
-                   aa, fsr ? 1 : 0, sharpness, filter, lane ? 1 : 0, music, game, fps, dualsense ? 1 : 0, ps_prompts ? 1 : 0,
+                   aa, fsr ? 1 : 0, sharpness, host_rts ? 1 : 0, cheat_menu ? 1 : 0, dualsense_strength, filter, lane ? 1 : 0, music, game, fps, dualsense ? 1 : 0, ps_prompts ? 1 : 0,
                    skip_intro ? 1 : 0, radnet ? 1 : 0, fps60 ? 60 : 30, language);
       std::fclose(f);
     }
@@ -233,6 +240,17 @@ struct Settings {
     rex::cvar::SetFlagByName("vsync", "true");
     // (both games wait two vblanks a frame: their 30 fps, or 60 with the vblanks twice as fast)
     rex::cvar::SetFlagByName("guest_vblank_scale", fps60 ? "2" : "1");
+    {
+      // (init-only, and the start's flags are final by now; the GPU is set up after this menu)
+      rex::cvar::testing::ScopedLifecycleOverride override_init_only;  // (always built, cvar.cpp)
+      rex::cvar::SetFlagByName("render_target_path_vulkan", host_rts ? "fbo" : "fsi");
+      // (host render targets: an unclipped draw's height from its vertices, run on the CPU - Max Payne 3
+      // RePrescribed's FAST renderer lost its HDR scene and depth without it)
+      rex::cvar::SetFlagByName("execute_unclipped_draw_vs_on_cpu", host_rts ? "true" : "false");
+    }
+    rex::cvar::SetFlagByName("sr_quick_menu", cheat_menu ? "true" : "false");
+    rex::cvar::SetFlagByName("gta4_sony_intensity",
+                             dualsense_strength == 1 ? "0.3" : dualsense_strength == 3 ? "1.0" : "0.6");
     rex::cvar::SetFlagByName("swap_post_effect", aa == 2 ? "smaa" : aa == 1 ? "fxaa" : "none");
     rex::cvar::SetFlagByName("present_effect", fsr ? "fsr" : "bilinear");
     rex::cvar::SetFlagByName("present_fsr_sharpness_reduction", kSharpnessStops[sharpness]);
@@ -309,7 +327,7 @@ const char* const kPageNames[kPages] = {"HOME", "CONTENT", "SAVES", "SETTINGS", 
 // The settings page's rows, in its order (a new option: a row here, its line
 // in SettingsLines and its change in ChangeSetting).
 enum SettingsRow {
-  kFrameRate, kUpscaling, kSharpness, kAntiAliasing, kFiltering, kLane, kFps, kPrompts, kDualSense, kLanguage, kSkipIntro, kMusic, kSettingsRows
+  kFrameRate, kUpscaling, kSharpness, kAntiAliasing, kFiltering, kLane, kFps, kPrompts, kDualSense, kLanguage, kSkipIntro, kCheatMenu, kDualSenseStrength, kRenderer, kMusic, kSettingsRows
 };
 
 class MenuDialog final : public rex::ui::ImGuiDialog {
@@ -630,6 +648,17 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     lines[kSkipIntro] = {"GAME", "SKIP INTRO", settings_.skip_intro ? "ON" : "OFF", true,
                          "The games start straight at their title screens, without the THQ and Volition logo "
                          "movies."};
+    lines[kCheatMenu] = {"GAME", "CHEAT MENU (L3 + R3)", settings_.cheat_menu ? "ON" : "OFF", true,
+                         "In the game, press both sticks in (L3 + R3) for the quick menu: the cheats, the FPS "
+                         "counter and the DualSense features. OFF: no quick menu, and no cheats."};
+    static constexpr const char* kStrengths[] = {"", "LOW", "MEDIUM", "HIGH"};
+    lines[kDualSenseStrength] = {"CONTROLLER", "FEEDBACK STRENGTH", kStrengths[settings_.dualsense_strength],
+                                 settings_.dualsense,
+                                 "How strong the DualSense's added rumble and pulses are."};
+    lines[kRenderer] = {"EXPERIMENTAL", "RENDERER", settings_.host_rts ? "FAST" : "ACCURATE", true,
+                        "ACCURATE copies the Xbox 360's video memory exactly, pixel by pixel. FAST draws with the PS5's "
+                        "own graphics hardware: quicker, and the light glows hide behind walls and people as they "
+                        "should, but some effects may draw wrong. Testing."};
     lines[kMusic] = {"AUDIO", "MENU MUSIC", music, true, "How loud this menu's song is.", true};
     return lines;
   }
@@ -677,6 +706,17 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       }
       case kSkipIntro:
         if (flip) settings_.skip_intro = !settings_.skip_intro;
+        break;
+      case kCheatMenu:
+        if (flip) settings_.cheat_menu = !settings_.cheat_menu;
+        break;
+      case kDualSenseStrength:
+        if (!settings_.dualsense) break;
+        if (cross) settings_.dualsense_strength = settings_.dualsense_strength % 3 + 1;
+        settings_.dualsense_strength = std::clamp(settings_.dualsense_strength + step, 1, 3);
+        break;
+      case kRenderer:
+        if (flip) settings_.host_rts = !settings_.host_rts;
         break;
       case kMusic:
         settings_.music = std::clamp(settings_.music + step * 10, 0, 100);
