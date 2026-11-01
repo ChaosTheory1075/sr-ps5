@@ -137,6 +137,10 @@ void Report(const std::string& out) {
 
 void OnPcall(PPCContext& ctx, uint8_t* base) {
   if (t_busy || !ctx.r3.u32) return;
+  // Not while the game is starting: Saints Row 2 crashed compiling our first chunk among its own
+  // start-up script calls (the parser's prototype not there yet). 45 s after its first script call.
+  static const uint64_t first_call_ms = SDL_GetTicks();
+  if (SDL_GetTicks() - first_call_ms < 45000) return;
   std::unique_lock run(g_run, std::try_to_lock);
   if (!run.owns_lock()) return;
   Pending job;

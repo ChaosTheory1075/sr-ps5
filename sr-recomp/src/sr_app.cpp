@@ -275,3 +275,20 @@ void SrApp::OnPreSetup(rex::RuntimeConfig& config) {
               rex::cvar::GetFlagByName("gpu_allow_invalid_fetch_constants"),
               rex::cvar::GetFlagByName("render_target_path_vulkan"));
 }
+
+#if REX_PLATFORM_PS5 && SR_GAME == 1
+// Saints Row's DemonWare networking (bdNetImpl::receiveAndDispatchAll, 82704560) reads its socket every
+// frame through 82763BF8 (r3 the socket object: its vtable's receive). Offline there is no socket: r3
+// was null and the first read jumped through address 0 right after the start-up movie. No socket,
+// nothing received (r3 = 0: the caller takes it as no packets).
+extern "C" void sub_82763BF8(PPCContext& __restrict ctx, uint8_t* base) {
+  if (!ctx.r3.u32) {
+    static bool logged = false;
+    if (!logged) REXLOG_INFO("Saints Row: no network socket (offline): DemonWare receives skipped");
+    logged = true;
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_82763BF8(ctx, base);
+}
+#endif
