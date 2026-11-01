@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include <SDL3/SDL_timer.h>
 #include <imgui.h>
 #include <rex/cvar.h>
 #include <rex/input/sony_feedback.h>
@@ -155,47 +156,53 @@ void SaveCheats() {
   std::fclose(f);
 }
 
-// The player, in the chunks (Lua): Saints Row's scripts name him "#PLAYER#"; Saints Row 2's
-// LOCAL_PLAYER ("#PLAYER1#", ug_lib.lua). And each game's notoriety teams, as their scripts reset them.
+// The player, as the scripts name him: Saints Row's "#PLAYER#"; Saints Row 2's LOCAL_PLAYER
+// ("#PLAYER1#", ug_lib.lua). And each game's notoriety teams, as their scripts reset them.
 #if SR_GAME == 1
-constexpr const char* kPlayerLua = "local P = '#PLAYER#'\n";
-constexpr const char* kGangs = "'police', 'los_carnales', 'vice_kings', 'rollers'";
+constexpr const char* kPlayer = "#PLAYER#";
+constexpr const char* kGangs[] = {"police", "los_carnales", "vice_kings", "rollers"};
 #else
-constexpr const char* kPlayerLua = "local P = LOCAL_PLAYER or '#PLAYER1#'\n";
-constexpr const char* kGangs = "'police', 'ronin', 'brotherhood', 'samedi'";
+constexpr const char* kPlayer = "#PLAYER1#";
+constexpr const char* kGangs[] = {"police", "ronin", "brotherhood", "samedi"};
 #endif
 
-// The tick: the cheats held, and the player's state for the DualSense ("<health> <max> <in game>").
-// The games' own script API, as their missions call it: turn_invulnerable / turn_vulnerable,
-// notoriety_reset("police"), set_ignore_ai_flag, get_current_hit_points / get_max_hit_points.
-std::string MakeTick() {
-  char head[160];
-  std::snprintf(head, sizeof(head), "local god, nocops, ignore, gen = %d, %d, %d, %u\n", g_on[kGod].load() ? 1 : 0,
-                g_on[kNoCops].load() ? 1 : 0, g_on[kIgnored].load() ? 1 : 0, g_generation.load());
-  return std::string(head) + "if get_current_hit_points == nil or get_max_hit_points == nil then return 'skip' end\n" +
-         kPlayerLua + R"LUA(local function try(f, ...) if f then local ok, r = pcall(f, ...) if ok then return r end end end
-local m = try(get_max_hit_points, P) or 0
-local h = try(get_current_hit_points, P) or 0
-if m <= 0 then return 'none' end
-local R = __ReInstated
-if R == nil then R = {} __ReInstated = R end
-local again = R.gen ~= gen
-R.gen = gen
-if god == 1 then
-  if again or not R.god then try(turn_invulnerable, P) R.god = true end
-elseif R.god then
-  try(turn_vulnerable, P) R.god = nil
-end
-if nocops == 1 then try(notoriety_reset, 'police') end
-if ignore == 1 then
-  if again or not R.ignore then try(set_ignore_ai_flag, P, true) R.ignore = true end
-elseif R.ignore then
-  try(set_ignore_ai_flag, P, false) R.ignore = nil
-end
-local g = 1
-if try(character_is_dead, P) then g = 0 end
-return string.format('%.3f %.3f %d', h, m, g)
-)LUA";
+LuaCall Call(const char* function, std::vector<LuaArg> args = {}) { return {function, std::move(args)}; }
+LuaCall OnPlayer(const char* function) { return Call(function, {LuaArg::Str(kPlayer)}); }
+
+// The tick: the cheats held, and the player's state for the DualSense. The games' own script API,
+// as their missions call it: get_max_hit_points / get_current_hit_points / character_is_dead,
+// turn_invulnerable / turn_vulnerable, notoriety_reset("police"), set_ignore_ai_flag.
+// (results: [0] max, [1] health, [2] dead; then the cheats')
+struct Held {
+  uint32_t generation = 0;
+  bool god = false, ignore = false;
+};
+Held g_held;  // (the game thread's: the tick's make and done run there)
+
+std::vector<LuaCall> MakeTick() {
+  std::vector<LuaCall> calls = {OnPlayer("get_max_hit_points"), OnPlayer("get_current_hit_points"),
+                                OnPlayer("character_is_dead")};
+  const uint32_t gen = g_generation.load();
+  const bool again = g_held.generation != gen;
+  const bool god = g_on[kGod].load(), ignore = g_on[kIgnored].load();
+  if (god && (again || !g_held.god)) calls.push_back(OnPlayer("turn_invulnerable"));
+  if (!god && g_held.god) calls.push_back(OnPlayer("turn_vulnerable"));
+  if (g_on[kNoCops].load()) calls.push_back(Call("notoriety_reset", {LuaArg::Str("police")}));
+  if (ignore != g_held.ignore || (ignore && again))
+    calls.push_back(Call("set_ignore_ai_flag", {LuaArg::Str(kPlayer), LuaArg::Bool(ignore)}));
+  g_held = {gen, god, ignore};
+  return calls;
+}
+
+void TickDone(const std::vector<LuaResult>& out) {
+  PlayerStatus s;
+  s.updated_ms = SDL_GetTicks();
+  if (out.size() >= 3 && out[0].ok && out[1].ok && out[0].value > 0) {
+    s.max_health = float(out[0].value);
+    s.health = float(out[1].value);
+    s.in_game = !(out[2].ok && out[2].value == 1);
+  }
+  SetPlayerStatus(s);
 }
 
 // ---- the one-off actions ----
@@ -203,30 +210,29 @@ return string.format('%.3f %.3f %d', h, m, g)
 enum Action { kCash, kClearNotoriety, kToggleHud, kActionCount };
 bool g_hud_hidden = false;  // (the UI thread's)
 
-void LogResult(const char* what, const std::string& out) {
-  REXLOG_INFO("Quick menu: {}: {}", what, out);
+void LogResults(const char* what, const std::vector<LuaResult>& out) {
+  int ok = 0;
+  for (const LuaResult& r : out) ok += r.ok ? 1 : 0;
+  REXLOG_INFO("Quick menu: {}: {} of {} calls ran", what, ok, out.size());
 }
 
 void RunAction(int action) {
-  const std::string player = std::string(kPlayerLua) + "if get_max_hit_points == nil then return 'skip' end\n";
+  // (each batch starts with the player's health: not run until the player is in the game)
+  std::vector<LuaCall> calls = {OnPlayer("get_max_hit_points")};
   switch (action) {
     case kCash:
-      LuaRunOnce(player + "if cash_add == nil then return 'no cash_add' end\n"
-                          "local ok, e = pcall(cash_add, 10000)\nreturn ok and 'cash +10000' or tostring(e)\n",
-                 [](const std::string& out) { LogResult("cash", out); });
+      calls.push_back(Call("cash_add", {LuaArg::Num(10000)}));
+      LuaRunOnce(calls, [](const std::vector<LuaResult>& out) { LogResults("cash", out); });
       break;
     case kClearNotoriety:
-      LuaRunOnce(player + "if notoriety_reset == nil then return 'no notoriety_reset' end\nfor _, t in ipairs({" +
-                     kGangs + "}) do pcall(notoriety_reset, t) end\nreturn 'cleared'\n",
-                 [](const std::string& out) { LogResult("notoriety", out); });
+      for (const char* gang : kGangs) calls.push_back(Call("notoriety_reset", {LuaArg::Str(gang)}));
+      LuaRunOnce(calls, [](const std::vector<LuaResult>& out) { LogResults("notoriety", out); });
       break;
-    case kToggleHud: {
+    case kToggleHud:
       g_hud_hidden = !g_hud_hidden;
-      LuaRunOnce(player + "if hud_hide == nil then return 'no hud_hide' end\nlocal ok, e = pcall(hud_hide, " +
-                     std::string(g_hud_hidden ? "true" : "false") + ")\nreturn ok and 'done' or tostring(e)\n",
-                 [](const std::string& out) { LogResult("HUD", out); });
+      calls.push_back(Call("hud_hide", {LuaArg::Bool(g_hud_hidden)}));
+      LuaRunOnce(calls, [](const std::vector<LuaResult>& out) { LogResults("HUD", out); });
       break;
-    }
   }
 }
 
@@ -390,15 +396,14 @@ void StartQuickMenu(rex::ui::ImGuiDrawer* drawer) {
   if (g_menu || !drawer) return;
   LoadCheats();
   g_menu = std::make_unique<QuickMenu>(drawer);
-  LuaSetTick(MakeTick, 200);
-  // (once, in the log: what the game's Lua has, with the player in the game)
-  LuaRunOnce(std::string("if get_max_hit_points == nil then return 'skip' end\n") + kPlayerLua +
-                 R"LUA(local function v(f, ...) if f == nil then return 'none' end local ok, r = pcall(f, ...) return tostring(ok) .. ':' .. tostring(r) end
-return 'player ' .. tostring(P) .. ', health ' .. v(get_current_hit_points, P) .. '/' .. v(get_max_hit_points, P) ..
-  ', turn_invulnerable ' .. type(turn_invulnerable) .. ', notoriety_reset ' .. type(notoriety_reset) ..
-  ', set_ignore_ai_flag ' .. type(set_ignore_ai_flag) .. ', cash_add ' .. type(cash_add) .. ', hud_hide ' .. type(hud_hide)
-)LUA",
-             [](const std::string& out) { REXLOG_INFO("SAINTS ROW: ReInstated: Lua probe: {}", out); });
+  LuaSetTick(MakeTick, TickDone, 200);
+  // (once, in the log: the player's health as the game's own functions give it)
+  LuaRunOnce({OnPlayer("get_max_hit_points"), OnPlayer("get_current_hit_points")},
+             [](const std::vector<LuaResult>& out) {
+               REXLOG_INFO("SAINTS ROW: ReInstated: Lua probe: max health {} ({}), health {} ({})",
+                           out.size() > 0 ? out[0].value : 0.0, out.size() > 0 && out[0].ok,
+                           out.size() > 1 ? out[1].value : 0.0, out.size() > 1 && out[1].ok);
+             });
 }
 
 }  // namespace srps5
