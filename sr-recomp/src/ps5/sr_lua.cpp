@@ -13,6 +13,7 @@
 #include <SDL3/SDL_timer.h>
 
 #include <rex/logging.h>
+#include <rex/memory.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
@@ -23,19 +24,21 @@ namespace {
 
 using GuestFn = void (*)(PPCContext&, uint8_t*);
 
-// The games' Lua 5.1 API, found through its standalone debug console (ldblib's db_debug: the
-// "=(debug command)" chunk name): luaL_loadbuffer(L, buffer, size, name),
-// lua_pcall(L, nargs, nresults, errfunc), lua_tolstring(L, index, size_t*), lua_settop(L, index).
-// (Prototype's addresses: off until Saints Row's own are found, SR_GAME_HOOKS in CMakeLists.txt)
-#if SR_GAME_HOOKS
+// The games' Lua 5.0 API, found through the base library's function table (luaB_loadstring,
+// luaB_pcall, luaB_print, luaB_tostring) and the order of lapi.c's functions:
+//  - Saints Row 2: luaL_loadbuffer(L, buffer, size, name) 829CE7D8, lua_pcall(L, nargs, nresults,
+//    errfunc) 829CB108, lua_tostring(L, index) 829CA4A8, lua_settop(L, index) 829C9E58.
+//  - Saints Row inlines luaL_loadbuffer and lua_pcall: the chunk is loaded with lua_load(L, reader,
+//    data, name) 82505FE0 and luaB_loadstring's reader getS (825073E0, data: {const char* s; size_t
+//    size}), and run with luaD_pcall(L, f_call, &CallS{func, nresults}, func's stack offset,
+//    errfunc) 8250EE78 and f_call 82505FD0, as luaB_pcall does; lua_tostring 82505680,
+//    lua_settop 82505180. Its TValues are 8 bytes (Saints Row 2's 16).
 #if SR_GAME == 1
-const GuestFn kLoadBuffer = sub_82ACB660, kPcall = __imp__sub_829F96B0, kToLString = sub_829F8910,
-              kSetTop = sub_829F8230;
+const GuestFn kLoad = sub_82505FE0, kDPcall = sub_8250EE78, kToString = sub_82505680, kSetTop = sub_82505180;
+constexpr uint32_t kGetS = 0x825073E0, kFCall = 0x82505FD0;
 #else
-const GuestFn kLoadBuffer = sub_82C261B8, kPcall = __imp__sub_82BE8610, kToLString = sub_82BE7820,
-              kSetTop = sub_8219AB18;
+const GuestFn kLoadBuffer = sub_829CE7D8, kPcall = sub_829CB108, kToString = sub_829CA4A8, kSetTop = sub_829C9E58;
 #endif
-#endif  // SR_GAME_HOOKS
 
 constexpr uint32_t kBufferSize = 64 * 1024;  // (the chunk name, then the chunk)
 constexpr char kChunkName[] = "=ReInstated";
@@ -73,24 +76,41 @@ std::string Run(PPCContext& ctx, uint8_t* base, uint32_t L, const std::string& c
   const uint32_t text = g_buffer + sizeof(kChunkName);
   std::memcpy(host + sizeof(kChunkName), chunk.data(), chunk.size());
 
-  // (the game's registers as they were at its lua_pcall, put back after; our calls use the stack
-  // below its)
+  // (the game's registers as they were at its call, put back after; our calls use the stack below
+  // its)
   const PPCContext saved = ctx;
   const uint64_t stack = (saved.r1.u64 - 0x400) & ~uint64_t(0xF);
-  auto call = [&](GuestFn fn, uint64_t r4, uint64_t r5, uint64_t r6) {
+  auto call = [&](GuestFn fn, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7 = 0) {
     ctx.r1.u64 = stack;
     ctx.r3.u64 = L;
     ctx.r4.u64 = r4;
     ctx.r5.u64 = r5;
     ctx.r6.u64 = r6;
+    ctx.r7.u64 = r7;
     fn(ctx, base);
     return ctx.r3.u32;
   };
-#if SR_GAME_HOOKS
+#if SR_GAME == 1
+  // (after the text, 8-aligned: LoadS {s, size}, then CallS {func, nresults})
+  const uint32_t load_s = (text + uint32_t(chunk.size()) + 15) & ~7u, call_s = load_s + 8;
+  auto put32 = [&](uint32_t at, uint32_t v) { rex::memory::store_and_swap<uint32_t>(memory->TranslateVirtual(at), v); };
+  auto get32 = [&](uint32_t at) { return rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual(at)); };
+  put32(load_s, text);
+  put32(load_s + 4, uint32_t(chunk.size()));
+  int status = int32_t(call(kLoad, kGetS, load_s, g_buffer));
+  if (status == 0) {
+    // (the chunk is on top: L->top (+8) - 8 is its function; L->stack at +0x1C)
+    const uint32_t func = get32(L + 8) - 8;
+    put32(call_s, func);
+    put32(call_s + 4, 1);
+    status = int32_t(call(kDPcall, kFCall, call_s, func - get32(L + 0x1C), 0));
+  }
+#else
   int status = int32_t(call(kLoadBuffer, text, chunk.size(), g_buffer));
   if (status == 0) status = int32_t(call(kPcall, 0, 1, 0));
+#endif
   // (one value on top either way: the chunk's result or the error message)
-  const uint32_t str = call(kToLString, uint64_t(int64_t(-1)), 0, 0);
+  const uint32_t str = call(kToString, uint64_t(int64_t(-1)), 0, 0);
   std::string out;
   if (str) {
     const char* s = memory->TranslateVirtual<const char*>(str);
@@ -99,11 +119,6 @@ std::string Run(PPCContext& ctx, uint8_t* base, uint32_t L, const std::string& c
   call(kSetTop, uint64_t(int64_t(-2)), 0, 0);
   ctx = saved;
   return status ? "error: " + out : out;
-#else
-  (void)call;
-  (void)text;
-  return "error: no Lua hooks yet";
-#endif
 }
 
 void Report(const std::string& out) {
@@ -187,20 +202,32 @@ void LuaSetTick(std::function<std::string()> make, uint32_t period_ms) {
 
 }  // namespace srps5
 
-// The game's lua_pcall: our chunks first, at this safe point, then the game's call.
-// (Prototype's addresses: off until Saints Row's own are found, SR_GAME_HOOKS in CMakeLists.txt)
-#if SR_GAME_HOOKS
+// The safe point: the game's own calls into its scripts, our chunks first, on that state.
 #if SR_GAME == 1
-extern "C" void sub_829F96B0(PPCContext& __restrict ctx, uint8_t* base) {
-  srps5::OnPcall(ctx, base);
-  __imp__sub_829F96B0(ctx, base);
+// Saints Row: luaD_call(L, func, nresults) (its lua_call is inlined into the game's script calls),
+// only when the game's code called it (LR outside the Lua core, 82504000-82520000: not a call the
+// interpreter makes from inside a running script). func is a stack pointer: taken again after our
+// chunk, as its offset, in case the stack grew.
+extern "C" void sub_8250EB28(PPCContext& __restrict ctx, uint8_t* base) {
+  const uint32_t lr = uint32_t(ctx.lr);
+  if (lr && (lr < 0x82504000 || lr >= 0x82520000)) {
+    const uint32_t L = ctx.r3.u32;
+    auto* kernel = REX_KERNEL_STATE();
+    if (L && kernel) {
+      auto* memory = kernel->memory();
+      const uint32_t offset = ctx.r4.u32 - rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual(L + 0x1C));
+      srps5::OnPcall(ctx, base);
+      ctx.r4.u64 = rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual(L + 0x1C)) + offset;
+    }
+  }
+  __imp__sub_8250EB28(ctx, base);
 }
 #else
-extern "C" void sub_82BE8610(PPCContext& __restrict ctx, uint8_t* base) {
+// Saints Row 2: lua_call(L, nargs, nresults), which only C code calls (the game's and its libraries').
+extern "C" void sub_829CB0E0(PPCContext& __restrict ctx, uint8_t* base) {
   srps5::OnPcall(ctx, base);
-  __imp__sub_82BE8610(ctx, base);
+  __imp__sub_829CB0E0(ctx, base);
 }
 #endif
-#endif  // SR_GAME_HOOKS
 
 #endif  // REX_PLATFORM_PS5

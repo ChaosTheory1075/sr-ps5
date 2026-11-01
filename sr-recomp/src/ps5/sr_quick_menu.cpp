@@ -1,7 +1,7 @@
 // SAINTS ROW: ReInstated (PS5) - the in-game quick menu (see sr_quick_menu.h).
 //
-// The controller is read where the game reads it: the title's XInputGetState (P1 82B3DDA8, P2
-// 822C7630: r3 the user, r4 the X_INPUT_STATE; they call XamInputGetState). After it runs, the menu
+// The controller is read where the game reads it: the title's XInputGetState (Saints Row 8272CE88,
+// Saints Row 2 82AA61D0: r3 the user, r4 the X_INPUT_STATE; they call XamInputGetState). After it runs, the menu
 // takes what was pressed and, while open, blanks the state the game gets.
 #include "sr_quick_menu.h"
 #if REX_PLATFORM_PS5
@@ -113,7 +113,7 @@ void Filter(uint8_t* base, uint32_t state) {
 
 // ---- the cheats ----
 
-enum Cheat { kGod, kAmmo, kIgnored, kMass, kInstakill, kCheatCount };
+enum Cheat { kGod, kNoCops, kIgnored, kCheatCount };
 struct CheatInfo {
   const char* key;    // in cheats<N>.ini
   const char* label;  // in the menu
@@ -121,10 +121,8 @@ struct CheatInfo {
 };
 constexpr CheatInfo kCheats[kCheatCount] = {
     {"god_mode", "God Mode", true},
-    {"infinite_ammo", "Infinite Ammo", true},
+    {"no_cops", "No Police Notoriety", true},
     {"enemies_ignore_you", "Enemies Ignore You", true},
-    {"infinite_mass", "Infinite Mass", false},
-    {"one_hit_kills", "One-Hit Kills", false},
 };
 std::array<std::atomic<bool>, kCheatCount> g_on{};
 std::atomic<uint32_t> g_generation{1};  // (changed with any cheat: the tick puts them all again)
@@ -155,151 +153,81 @@ void SaveCheats() {
   std::fclose(f);
 }
 
-// ---- Saints Row 2's look ----
-//
-// COLOUR FILTER off: the zone tints gone. Saints Row 2 tints each zone (the yellow one most of all):
-// 822C3E08 picks the colour grade for the zone the player's in and blends to it with the time of
-// day's tod_BlendColourGrade (824B9468: r4 the grade, 0..9; below 0 none). With the filter off, any
-// grade asked for is none; the last one asked for comes back when it's on again.
-// FOG: tod_FogDensityScaler (822D0478, f1 the scale the scripts set, 1 until they do) scaled down.
-// The quick menu's changes reach them through the same two functions, from the Lua tick, with
-// kAgain for "the last one asked for".
-constexpr int kAgain = -777;
-std::atomic<bool> g_colour_off{false};
-std::atomic<int> g_fog{0};             // 0 as the game, 1 reduced, 2 light
-std::atomic<uint32_t> g_look_generation{1};
-std::atomic<int> g_grade{INT32_MIN};   // (the last grade the game asked for; INT32_MIN: none yet)
-std::atomic<double> g_fog_scale{1.0};  // (and the last fog scale)
-constexpr const char* kFogNames[] = {"AS THE GAME", "REDUCED", "LIGHT"};
-constexpr double kFogScales[] = {1.0, 0.45, 0.15};
-
-// The player, in the chunks (Lua): Saints Row 2's PLAYER global; Saints Row's game object "alex",
-// the name its own code looks him up by (823CE4A8).
-#if SR_GAME == 1
-constexpr const char* kPlayerLua =
-    "local P = PLAYER\n"
-    "if P == nil and go_FindGOHByName ~= nil then local ok, r = pcall(go_FindGOHByName, 'alex') if ok then P = r end end\n";
-#else
-constexpr const char* kPlayerLua = "local P = PLAYER\n";
-#endif
+// The player, in the chunks (Lua): the scripts' LOCAL_PLAYER ("#PLAYER1#", ug_lib.lua).
+constexpr const char* kPlayerLua = "local P = LOCAL_PLAYER or '#PLAYER1#'\n";
 
 // The tick: the cheats held, and the player's state for the DualSense ("<health> <max> <in game>").
+// The games' own script API, as their missions call it: turn_invulnerable / turn_vulnerable,
+// notoriety_reset("police"), set_ignore_ai_flag, get_current_hit_points / get_max_hit_points.
 std::string MakeTick() {
-  char head[256];
-  std::snprintf(head, sizeof(head), "local god, ammo, ignore, mass, insta, gen, look = %d, %d, %d, %d, %d, %u, %u\n",
-                g_on[kGod].load() ? 1 : 0, g_on[kAmmo].load() ? 1 : 0, g_on[kIgnored].load() ? 1 : 0,
-                g_on[kMass].load() ? 1 : 0, g_on[kInstakill].load() ? 1 : 0, g_generation.load(),
-                SR_GAME == 2 ? g_look_generation.load() : 0u);
-  return std::string(head) + "if go_GetHealth == nil or go_GetMaxHealth == nil then return 'skip' end\n" + kPlayerLua +
-         R"LUA(if P == nil then return 'none' end
-local function try(f, ...) if f then local ok, r = pcall(f, ...) if ok then return r end end end
-local m = try(go_GetMaxHealth, P) or 0
-local h = try(go_GetHealth, P) or 0
+  char head[160];
+  std::snprintf(head, sizeof(head), "local god, nocops, ignore, gen = %d, %d, %d, %u\n", g_on[kGod].load() ? 1 : 0,
+                g_on[kNoCops].load() ? 1 : 0, g_on[kIgnored].load() ? 1 : 0, g_generation.load());
+  return std::string(head) + "if get_current_hit_points == nil or get_max_hit_points == nil then return 'skip' end\n" +
+         kPlayerLua + R"LUA(local function try(f, ...) if f then local ok, r = pcall(f, ...) if ok then return r end end end
+local m = try(get_max_hit_points, P) or 0
+local h = try(get_current_hit_points, P) or 0
 if m <= 0 then return 'none' end
 local R = __ReInstated
 if R == nil then R = {} __ReInstated = R end
 local again = R.gen ~= gen
 R.gen = gen
-if look ~= 0 and R.look ~= look then
-  R.look = look
-  try(tod_BlendColourGrade, -777, 0.5)
-  try(tod_FogDensityScaler, -777.0)
-end
 if god == 1 then
-  try(go_SetDamageable, P, false)
-  if h > 0 and h < m then try(go_SetHealth, P, m) h = m end
-  R.god = P
-elseif R.god ~= nil then
-  try(go_SetDamageable, R.god, true) R.god = nil
+  if again or not R.god then try(turn_invulnerable, P) R.god = true end
+elseif R.god then
+  try(turn_vulnerable, P) R.god = nil
 end
-if again then try(go_SetGlobalInfiniteClip, ammo == 1) end
+if nocops == 1 then try(notoriety_reset, 'police') end
 if ignore == 1 then
-  if again or R.ignore ~= P then try(ai_SetTargetable, P, false) R.ignore = P end
-elseif R.ignore ~= nil then
-  try(ai_SetTargetable, R.ignore, true) R.ignore = nil
-end
-if go_SetMassMeterInfinite ~= nil then
-  if mass == 1 then
-    if again or R.mass ~= P then try(go_SetMassMeterInfinite, P, true) R.mass = P end
-  elseif R.mass ~= nil then
-    try(go_SetMassMeterInfinite, R.mass, false) R.mass = nil
-  end
-end
-if fes_SetInstakill ~= nil and (again or insta ~= (R.insta or 0)) and (insta == 1 or R.insta == 1) then
-  try(fes_SetInstakill, insta) R.insta = insta
+  if again or not R.ignore then try(set_ignore_ai_flag, P, true) R.ignore = true end
+elseif R.ignore then
+  try(set_ignore_ai_flag, P, false) R.ignore = nil
 end
 local g = 1
-if fe_IsMoviePlaying ~= nil and try(fe_IsMoviePlaying) then g = 0 end
-if fe_GetHudLoaded ~= nil and not try(fe_GetHudLoaded) then g = 0 end
+if try(character_is_dead, P) then g = 0 end
 return string.format('%.3f %.3f %d', h, m, g)
 )LUA";
 }
 
 // ---- the one-off actions ----
 
-enum Action { kGiveEp, kLoseAlert, kToggleHud, kTimeOfDay, kRadnet, kActionCount };
-
-// Saints Row 2's debug menu's times of day (tod_SetTimeOfDay's values).
-struct TimeOfDay {
-  const char* label;
-  float value;
-};
-constexpr TimeOfDay kTimes[] = {{"DAWN", 15.5f}, {"DAY", 16.5f}, {"NIGHT", 17.0f},
-                                {"DAWN, RAIN", 15.0f}, {"DAY, RAIN", 16.0f}, {"NIGHT, RAIN", 17.5f}};
-int g_time = 1;  // (the UI thread's)
+enum Action { kCash, kClearNotoriety, kToggleHud, kActionCount };
+bool g_hud_hidden = false;  // (the UI thread's)
 
 void LogResult(const char* what, const std::string& out) {
   REXLOG_INFO("Quick menu: {}: {}", what, out);
 }
 
 void RunAction(int action) {
-  const std::string player = std::string(kPlayerLua) + "if P == nil then return 'skip' end\n";
+  const std::string player = std::string(kPlayerLua) + "if get_max_hit_points == nil then return 'skip' end\n";
   switch (action) {
-    case kGiveEp:
-#if SR_GAME == 1
-      // (Saints Row's EP, kept in its save as Saints Row 2's: "Sr_Save_EvolutionPoints")
-      LuaRunOnce("if db_GetInt == nil or db_SetInt == nil or go_GetHealth == nil then return 'skip' end\n" + player +
-                     R"LUA(local k = 'Sr_Save_EvolutionPoints'
-local ok, a = pcall(db_GetInt, k, 0, 0)
-if not ok or type(a) ~= 'number' then return 'no EP: ' .. tostring(a) end
-pcall(db_SetInt, k, 0, a + 10000, 0)
-local _, b = pcall(db_GetInt, k, 0, 0)
-return 'EP ' .. tostring(a) .. ' -> ' .. tostring(b)
+    case kCash:
+      LuaRunOnce(player + "if cash_add == nil then return 'no cash_add' end\n"
+                          "local ok, e = pcall(cash_add, 10000)\nreturn ok and 'cash +10000' or tostring(e)\n",
+                 [](const std::string& out) { LogResult("cash", out); });
+      break;
+    case kClearNotoriety:
+      LuaRunOnce(player + R"LUA(if notoriety_reset == nil then return 'no notoriety_reset' end
+for _, t in ipairs({'police', 'ronin', 'brotherhood', 'samedi', 'los carnales', 'rollerz', 'vice kings', 'westsiders'}) do
+  pcall(notoriety_reset, t)
+end
+return 'cleared'
 )LUA",
-                 [](const std::string& out) { LogResult("give EP", out); });
-#else
-      LuaRunOnce("if ep_AwardEP == nil then return 'skip' end\n" + player +
-                     "local ok, e = pcall(ep_AwardEP, 5000)\nreturn ok and 'EP +5000' or tostring(e)\n",
-                 [](const std::string& out) { LogResult("give EP", out); });
-#endif
+                 [](const std::string& out) { LogResult("notoriety", out); });
       break;
-    case kLoseAlert:
-      LuaRunOnce("if ai_ClearAllBlownDisguise == nil then return 'skip' end\n" + player +
-                     "local ok, e = pcall(ai_ClearAllBlownDisguise, P)\nreturn ok and 'cleared' or tostring(e)\n",
-                 [](const std::string& out) { LogResult("lose alert", out); });
-      break;
-    case kToggleHud:
-      LuaRunOnce("if fe_ToggleHideHUDOption == nil then return 'skip' end\n" + player +
-                     "local ok, e = pcall(fe_ToggleHideHUDOption)\nreturn ok and 'toggled' or tostring(e)\n",
+    case kToggleHud: {
+      g_hud_hidden = !g_hud_hidden;
+      LuaRunOnce(player + "if hud_hide == nil then return 'no hud_hide' end\nlocal ok, e = pcall(hud_hide, " +
+                     std::string(g_hud_hidden ? "true" : "false") + ")\nreturn ok and 'done' or tostring(e)\n",
                  [](const std::string& out) { LogResult("HUD", out); });
       break;
-    case kTimeOfDay: {
-      char chunk[160];
-      std::snprintf(chunk, sizeof(chunk), "local ok, e = pcall(tod_SetTimeOfDay, %.1f)\nreturn ok and 'set' or tostring(e)\n",
-                    kTimes[g_time].value);
-      LuaRunOnce("if tod_SetTimeOfDay == nil then return 'skip' end\n" + player + chunk,
-                 [](const std::string& out) { LogResult("time of day", out); });
-      break;
     }
-    case kRadnet:
-      UnlockRadnet();
-      break;
   }
 }
 
 // ---- the rows ----
 
-enum RowKind { kRowCheat, kRowAction, kRowFps, kRowColour, kRowFog, kRowDualSense };
+enum RowKind { kRowCheat, kRowAction, kRowFps, kRowDualSense };
 struct Row {
   const char* section;  // a heading over the row, or nullptr
   const char* label;
@@ -315,18 +243,10 @@ std::vector<Row> Rows() {
     rows.push_back({first ? "CHEATS" : nullptr, kCheats[i].label, kRowCheat, i});
     first = false;
   }
-  rows.push_back({"ACTIONS", SR_GAME == 2 ? "Give 5,000 EP" : "Give 10,000 EP", kRowAction, kGiveEp});
-  rows.push_back({nullptr, "Lose The Alert", kRowAction, kLoseAlert});
+  rows.push_back({"ACTIONS", "Give $10,000", kRowAction, kCash});
+  rows.push_back({nullptr, "Clear Notoriety", kRowAction, kClearNotoriety});
   rows.push_back({nullptr, "Show / Hide HUD", kRowAction, kToggleHud});
-#if SR_GAME == 2
-  rows.push_back({nullptr, "Time Of Day", kRowAction, kTimeOfDay});
-  rows.push_back({nullptr, "Unlock Radnet Events", kRowAction, kRadnet});
-#endif
   rows.push_back({"DISPLAY", "FPS Counter", kRowFps, 0});
-#if SR_GAME == 2
-  rows.push_back({nullptr, "Colour Filter", kRowColour, 0});
-  rows.push_back({nullptr, "Fog", kRowFog, 0});
-#endif
   rows.push_back({"CONTROLLER", "DualSense Features", kRowDualSense, 0});
   return rows;
 }
@@ -339,10 +259,8 @@ int CounterMode() {
 std::string ValueOf(const Row& row) {
   switch (row.kind) {
     case kRowCheat: return g_on[row.index].load() ? "ON" : "OFF";
-    case kRowAction: return row.index == kTimeOfDay ? kTimes[g_time].label : "PRESS X";
+    case kRowAction: return "PRESS X";
     case kRowFps: return CounterMode() == 2 ? "DETAILED" : CounterMode() == 1 ? "SIMPLE" : "OFF";
-    case kRowColour: return g_colour_off.load() ? "OFF" : "ON";
-    case kRowFog: return kFogNames[g_fog.load()];
     case kRowDualSense: return rex::input::sony::GetOptions().enabled ? "ON" : "OFF";
   }
   return "";
@@ -378,11 +296,7 @@ void Change(const Row& row, bool back, bool select) {
       SaveCheats();
       break;
     case kRowAction:
-      if (row.index == kTimeOfDay && !select) {
-        constexpr int n = int(std::size(kTimes));
-        g_time = (g_time + (back ? n - 1 : 1)) % n;
-      }
-      if (select || row.index == kTimeOfDay) RunAction(row.index);
+      if (select) RunAction(row.index);
       break;
     case kRowFps: {
       static constexpr const char* kModes[] = {"off", "simple", "detailed"};
@@ -391,18 +305,6 @@ void Change(const Row& row, bool back, bool select) {
       SetMenuValue("fps_counter", mode);
       break;
     }
-    case kRowColour:
-      g_colour_off.store(!g_colour_off.load());
-      g_look_generation.fetch_add(1);
-      SetMenuValue("colour_filter", g_colour_off.load() ? 0 : 1);
-      REXLOG_INFO("Quick menu: colour filter {}", g_colour_off.load() ? "off" : "on");
-      break;
-    case kRowFog:
-      g_fog.store((g_fog.load() + (back ? 2 : 1)) % 3);
-      g_look_generation.fetch_add(1);
-      SetMenuValue("fog", g_fog.load());
-      REXLOG_INFO("Quick menu: fog {}", kFogNames[g_fog.load()]);
-      break;
     case kRowDualSense: {
       const bool on = !rex::input::sony::GetOptions().enabled;
       rex::input::sony::SetFeaturesEnabled(on);
@@ -413,11 +315,7 @@ void Change(const Row& row, bool back, bool select) {
 }
 
 constexpr ImU32 kWhite = IM_COL32(236, 232, 226, 255), kGrey = IM_COL32(150, 146, 140, 255),
-#if SR_GAME == 1
-                kAccent = IM_COL32(200, 16, 16, 255), kAccentDim = IM_COL32(200, 16, 16, 50);
-#else
-                kAccent = IM_COL32(255, 64, 0, 255), kAccentDim = IM_COL32(255, 64, 0, 50);
-#endif
+                kAccent = IM_COL32(150, 60, 230, 255), kAccentDim = IM_COL32(150, 60, 230, 50);
 
 ImU32 Fade(ImU32 c, float a) { return (c & 0x00FFFFFFu) | (ImU32(float(c >> 24) * a) << 24); }
 
@@ -471,9 +369,7 @@ void QuickMenu::OnDraw(ImGuiIO& io) {
       dl->AddRectFilled(ImVec2(x + 24 * u, y + 2 * u), ImVec2(x + w - 24 * u, y + row_h - 2 * u), Fade(kAccentDim, a),
                         4 * u);
     dl->AddText(item, 28 * u, ImVec2(x + 40 * u, y + 5 * u), Fade(sel ? kWhite : kGrey, a), r.label);
-    const std::string v = sel && r.kind != kRowAction ? "<  " + ValueOf(r) + "  >"
-                          : sel && r.index == kTimeOfDay ? "<  " + ValueOf(r) + "  >"
-                                                         : ValueOf(r);
+    const std::string v = sel && r.kind != kRowAction ? "<  " + ValueOf(r) + "  >" : ValueOf(r);
     const float vw = item->CalcTextSizeA(28 * u, FLT_MAX, 0, v.c_str()).x;
     dl->AddText(item, 28 * u, ImVec2(x + w - 40 * u - vw, y + 5 * u), Fade(sel ? kWhite : kGrey, a), v.c_str());
     y += row_h;
@@ -482,106 +378,36 @@ void QuickMenu::OnDraw(ImGuiIO& io) {
               "UP DOWN  MOVE      LEFT RIGHT / X  CHANGE      O / L3+R3  CLOSE");
 }
 
-void UnlockRadnet() {
-#if SR_GAME == 2
-  // Saints Row 2's debug menu's "Unlock Radnet Events" (its scripts' fes_UnlockRadnetEventsDbg: the
-  // five weeks' events' unlock keys posted, their collectible sets unlocked), once the game is
-  // under way; its mission prerequisite override put back after, so events still wait for the
-  // story missions they need.
-  LuaRunOnce(R"LUA(if fes_UnlockRadnetEventsDbg == nil or mm_PostUnlockKey == nil or PLAYER == nil then return 'skip' end
-if fe_GetHudLoaded ~= nil and not fe_GetHudLoaded() then return 'skip' end
-if fe_IsMoviePlaying ~= nil and fe_IsMoviePlaying() then return 'skip' end
-local ok, e = pcall(fes_UnlockRadnetEventsDbg)
-if fes_SetRadnetMissionReqDbg ~= nil then pcall(fes_SetRadnetMissionReqDbg, false) end
-return ok and 'unlocked' or ('failed: ' .. tostring(e))
-)LUA",
-             [](const std::string& out) {
-               REXLOG_INFO("SAINTS ROW: ReInstated: Radnet events {}", out);
-               if (out == "skip") UnlockRadnet();  // (still not in the game after 10 minutes: wait on)
-             });
-#endif
-}
-
 void StartQuickMenu(rex::ui::ImGuiDrawer* drawer) {
   if (g_menu || !drawer) return;
   LoadCheats();
   g_menu = std::make_unique<QuickMenu>(drawer);
   LuaSetTick(MakeTick, 200);
   // (once, in the log: what the game's Lua has, with the player in the game)
-  LuaRunOnce(std::string("if go_GetHealth == nil then return 'skip' end\n") + kPlayerLua +
-                 R"LUA(if P == nil then return 'skip' end
-local function v(f, ...) if f == nil then return 'none' end local ok, r = pcall(f, ...) return tostring(ok) .. ':' .. tostring(r) end
-return 'player ' .. type(P) .. ' ' .. tostring(P) .. ', health ' .. v(go_GetHealth, P) .. '/' .. v(go_GetMaxHealth, P) ..
-  ', build ' .. v(fe_GetBuildType) .. ', platform ' .. v(fe_GetPlatformType) .. ', hud ' .. v(fe_GetHudLoaded) ..
-  ', radnet pack ' .. v(dlc_IsRadnetPackageDownloaded) .. ', debug lib ' .. type(debug) ..
-  ', EP ' .. v(db_GetInt, 'Sr_Save_EvolutionPoints', 0, 0) .. ', tod ' .. v(tod_GetTimeOfDay)
+  LuaRunOnce(std::string("if get_max_hit_points == nil then return 'skip' end\n") + kPlayerLua +
+                 R"LUA(local function v(f, ...) if f == nil then return 'none' end local ok, r = pcall(f, ...) return tostring(ok) .. ':' .. tostring(r) end
+return 'player ' .. tostring(P) .. ', health ' .. v(get_current_hit_points, P) .. '/' .. v(get_max_hit_points, P) ..
+  ', turn_invulnerable ' .. type(turn_invulnerable) .. ', notoriety_reset ' .. type(notoriety_reset) ..
+  ', set_ignore_ai_flag ' .. type(set_ignore_ai_flag) .. ', cash_add ' .. type(cash_add) .. ', hud_hide ' .. type(hud_hide)
 )LUA",
              [](const std::string& out) { REXLOG_INFO("SAINTS ROW: ReInstated: Lua probe: {}", out); });
-#if SR_GAME == 2
-  int radnet = 1, colour = 1, fog = 0;
-  if (std::FILE* f = std::fopen(kMenuFile, "rb")) {
-    char line[256];
-    while (std::fgets(line, sizeof(line), f)) {
-      std::sscanf(line, " radnet = %d", &radnet);
-      std::sscanf(line, " colour_filter = %d", &colour);
-      std::sscanf(line, " fog = %d", &fog);
-    }
-    std::fclose(f);
-  }
-  g_colour_off.store(colour == 0);
-  g_fog.store(std::clamp(fog, 0, 2));
-  if (radnet) UnlockRadnet();
-#endif
 }
 
 }  // namespace srps5
 
 // The title's XInputGetState: r3 the user, r4 the state; returns 0 when read.
-// (Prototype's addresses: off until Saints Row's own are found, SR_GAME_HOOKS in CMakeLists.txt)
-#if SR_GAME_HOOKS
 #if SR_GAME == 1
-extern "C" void sub_82B3DDA8(PPCContext& __restrict ctx, uint8_t* base) {
+extern "C" void sub_8272CE88(PPCContext& __restrict ctx, uint8_t* base) {
   const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
-  __imp__sub_82B3DDA8(ctx, base);
+  __imp__sub_8272CE88(ctx, base);
   if (user == 0 && state && ctx.r3.u32 == 0) srps5::Filter(base, state);
 }
 #else
-extern "C" void sub_822C7630(PPCContext& __restrict ctx, uint8_t* base) {
+extern "C" void sub_82AA61D0(PPCContext& __restrict ctx, uint8_t* base) {
   const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
-  __imp__sub_822C7630(ctx, base);
+  __imp__sub_82AA61D0(ctx, base);
   if (user == 0 && state && ctx.r3.u32 == 0) srps5::Filter(base, state);
 }
-
-// The time of day's tod_BlendColourGrade(grade, blend time): see "Saints Row 2's look".
-extern "C" void sub_824B9468(PPCContext& __restrict ctx, uint8_t* base) {
-  using namespace srps5;
-  int32_t grade = ctx.r4.s32;
-  if (grade == kAgain) {
-    grade = g_grade.load();
-    if (grade == INT32_MIN) {
-      if (!g_colour_off.load()) return;  // (none asked for yet: nothing to put back)
-      grade = -1;
-    }
-  } else {
-    g_grade.store(grade);
-  }
-  ctx.r4.s64 = g_colour_off.load() ? -1 : grade;
-  __imp__sub_824B9468(ctx, base);
-}
-
-// The time of day's tod_FogDensityScaler(scale).
-extern "C" void sub_822D0478(PPCContext& __restrict ctx, uint8_t* base) {
-  using namespace srps5;
-  double scale = ctx.f1.f64;
-  if (scale == double(kAgain)) {
-    scale = g_fog_scale.load();
-  } else {
-    g_fog_scale.store(scale);
-  }
-  ctx.f1.f64 = double(float(scale * kFogScales[g_fog.load()]));
-  __imp__sub_822D0478(ctx, base);
-}
 #endif
-#endif  // SR_GAME_HOOKS
 
 #endif  // REX_PLATFORM_PS5

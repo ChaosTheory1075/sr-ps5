@@ -1,11 +1,12 @@
-// SAINTS ROW: ReInstated (PS5) - Lua run in the games' own script engine. Both games embed Lua 5.1
-// and register their game API in it (go_SetDamageable, go_GetHealth, ep_AwardEP, the Radnet and
-// debug-menu functions of Saints Row 2's scripts...); the cheats, the Radnet unlock and the
-// DualSense's game state are short chunks of Lua calling it, so they go through the games' own code.
+// SAINTS ROW: ReInstated (PS5) - Lua run in the games' own script engine. Both games embed Lua 5.0
+// and register their game API in it (turn_invulnerable, notoriety_reset, cash_add, hud_hide,
+// get_current_hit_points...: the mission scripts' own calls); the cheats and the DualSense's game
+// state are short chunks of Lua calling it, so they go through the games' own code.
 //
-// A chunk runs on the game's thread at a safe point: as the game itself calls lua_pcall (P1
-// 829F96B0, P2 82BE8610), on that state, before the game's call - loaded with the game's
-// luaL_loadbuffer, run with its lua_pcall, the stack put back as it was.
+// A chunk runs on the game's thread at a safe point: as the game's code calls into its scripts
+// (Saints Row: luaD_call 8250EB28 from outside the Lua core; Saints Row 2: lua_call 829CB0E0), on
+// that state, before the game's call - loaded and run with the game's own Lua (sr_lua.cpp), the
+// stack put back as it was.
 #pragma once
 
 #include <rex/platform.h>
