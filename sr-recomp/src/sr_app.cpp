@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -350,4 +351,44 @@ extern "C" void sub_82704558(PPCContext& __restrict ctx, uint8_t* base) {
   }
   __imp__sub_82704558(ctx, base);
 }
+#endif
+
+#if REX_PLATFORM_PS5
+// FRAME RATE 60. Both games pace themselves with their own frame limiter (Saints Row 82646200,
+// Saints Row 2 82938428): each frame it measures the time since the last, sleeps while it's under
+// the minimum frame time in its table (Saints Row 827CA758, Saints Row 2 82B62380: 1/120 on the disc,
+// raised to 1/30 for gameplay) and hands the game that time as the frame's step - the game moves by
+// real time, not by frames. So the vblanks twice as fast (guest_vblank_scale 2) alone left gameplay
+// at 30; with the minimum held at 1/60 as well, it runs to 60 at the same speed.
+namespace {
+constexpr uint32_t kMinFrameTime = SR_GAME == 2 ? 0x82B62380 : 0x827CA758;
+void HoldMinFrameTime(uint8_t* base) {
+  static const bool fps60 = rex::cvar::GetFlagByName("guest_vblank_scale") == "2";
+  if (!fps60) return;
+  uint32_t raw;
+  std::memcpy(&raw, base + kMinFrameTime, 4);
+  raw = __builtin_bswap32(raw);
+  float min_frame;
+  std::memcpy(&min_frame, &raw, 4);
+  constexpr float k60 = 1.0f / 60.0f;
+  if (!(min_frame > k60 + 0.0005f)) return;
+  static bool logged = false;
+  if (!logged) REXLOG_INFO("{}: frame limiter's minimum {:.4f} s held at 1/60 (FRAME RATE 60)", kGameName, min_frame);
+  logged = true;
+  std::memcpy(&raw, &k60, 4);
+  raw = __builtin_bswap32(raw);
+  std::memcpy(base + kMinFrameTime, &raw, 4);
+}
+}  // namespace
+#if SR_GAME == 1
+extern "C" void sub_82646200(PPCContext& __restrict ctx, uint8_t* base) {
+  HoldMinFrameTime(base);
+  __imp__sub_82646200(ctx, base);
+}
+#else
+extern "C" void sub_82938428(PPCContext& __restrict ctx, uint8_t* base) {
+  HoldMinFrameTime(base);
+  __imp__sub_82938428(ctx, base);
+}
+#endif
 #endif
