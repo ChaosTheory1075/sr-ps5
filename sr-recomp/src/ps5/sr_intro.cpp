@@ -29,7 +29,11 @@ bool SkipMovie(uint32_t path_address) {
   if (!REXCVAR_GET(sr_skip_intro) || !path_address) return false;
   auto* kernel = REX_KERNEL_STATE();
   const char* path = kernel ? kernel->memory()->TranslateVirtual<const char*>(path_address) : nullptr;
-  if (!path || !strcasestr(path, "videos\\logo_")) return false;
+  if (!path) return false;
+  // (by hand: the PS5's libc has no strcasestr - calling it jumped to 0)
+  bool logo = false;
+  for (const char* p = path; *p && !logo; ++p) logo = strncasecmp(p, "videos\\logo_", 12) == 0;
+  if (!logo) return false;
   static std::atomic<int> logged{0};
   if (logged.fetch_add(1) < 4) REXLOG_INFO("SAINTS ROW: ReInstated: {} skipped (SKIP INTRO)", path);
   return true;
