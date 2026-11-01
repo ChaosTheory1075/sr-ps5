@@ -156,8 +156,8 @@ struct Settings {
   int fps = 0;        // sr_fps_counter: 0 off, 1 simple, 2 detailed
   bool dualsense = true;   // the light bar and R2 (gta4_sony_enabled: sr_dualsense.h)
   bool ps_prompts = true;  // PlayStation button prompts (sr_ps_prompts: sr_prompts.h)
-  bool skip_intro = true;  // Saints Row's Activision/Radical logo movie (sr_skip_intro: sr_intro.cpp)
-  bool radnet = true;      // Saints Row 2's Radnet events unlocked offline (sr_quick_menu.h's UnlockRadnet)
+  bool skip_intro = true;  // the THQ and Volition logo movies (sr_skip_intro: sr_intro.cpp)
+  bool radnet = true;      // (Prototype 2's Radnet setting, kept in menu.ini: not used here)
   int language = 1;        // the Xbox 360's language ID (user_language, XGetLanguage): kLanguages
 
   struct Language {
@@ -247,7 +247,7 @@ struct Settings {
 constexpr ImU32 kWhite = IM_COL32(236, 232, 226, 255);
 constexpr ImU32 kGrey = IM_COL32(150, 146, 140, 255);
 constexpr ImU32 kDim = IM_COL32(90, 88, 84, 255);
-constexpr ImU32 kRed = IM_COL32(196, 22, 28, 255);
+constexpr ImU32 kRed = IM_COL32(150, 60, 230, 255);  // (the accent: the Saints' purple)
 constexpr ImU32 kText = IM_COL32(205, 202, 196, 255);
 
 struct Image {
@@ -878,7 +878,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     }
     button(x - 22 * u, "R1");
     // the project's name at the right
-    const char* name = "SAINTS ROW  REEVOLUTION";
+    const char* name = "SAINTS ROW  REINSTATED";
     const float nw = Width(g_body, 20 * u, name);
     dl->AddText(g_body, 20 * u, ImVec2(size.x - 140 * u - nw, y + 12 * u), A(kDim), name);
     dl->AddRectFilled(ImVec2(tab_x_, y + 56 * u), ImVec2(tab_x_ + tab_w_, y + 61 * u), A(kRed));
@@ -1323,7 +1323,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     // the project
     dl->AddText(g_title, 60 * u, ImVec2(x, y - 6 * u), P(kWhite), "SAINTS ROW");
     const float tw = Width(g_title, 60 * u, "SAINTS ROW");
-    Spaced(dl, g_item, 30 * u, ImVec2(x + tw + 22 * u, y + 24 * u), P(kRed), "REEVOLUTION", 6 * u);
+    Spaced(dl, g_item, 30 * u, ImVec2(x + tw + 22 * u, y + 24 * u), P(kRed), "REINSTATED", 6 * u);
     y += 96 * u;
     entry("BY CHAOSTHEORY1075", "github.com/ChaosTheory1075/sr-ps5");
     dl->AddText(g_body, 20 * u, ImVec2(x, y), P(kRed), "ALL THE CREDIT GOES TO");
@@ -1347,14 +1347,14 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     // the shout-out, on a panel of its own
     {
       const char* thanks =
-          "For Alex Mercer and James Heller, Manhattan's worst week and New York Zero: the whipfist, the "
-          "blade, the gliding, and a city to tear through.";
+          "For Stilwater and the 3rd Street Saints: Julius, Johnny Gat, Troy, Dex, Shaundi, Pierce and Carlos, "
+          "the purple flag, and a city to take back block by block.";
       const float th = g_body->CalcTextSizeA(26 * u, FLT_MAX, pw - 48 * u, thanks).y;
       dl->AddRectFilled(ImVec2(px - 24 * u, py - 16 * u), ImVec2(px + pw, py + 96 * u + th),
                         P(IM_COL32(8, 8, 8, 170)), 6 * u);
       dl->AddRectFilled(ImVec2(px - 24 * u, py - 16 * u), ImVec2(px - 18 * u, py + 96 * u + th), P(kRed));
       dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), "SPECIAL THANKS");
-      dl->AddText(g_item, 40 * u, ImVec2(px, py + 30 * u), P(kWhite), "RADICAL ENTERTAINMENT");
+      dl->AddText(g_item, 40 * u, ImVec2(px, py + 30 * u), P(kWhite), "VOLITION");
       dl->AddText(g_body, 26 * u, ImVec2(px, py + 84 * u), P(kGrey), thanks, nullptr, pw - 48 * u);
       py += 96 * u + th + 46 * u;
     }
@@ -1366,7 +1366,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), "PLEASE NOTE");
     py += 36 * u;
     const char* note =
-        "An unofficial fan project, not affiliated with or endorsed by Activision, Radical Entertainment, Microsoft "
+        "An unofficial fan project, not affiliated with or endorsed by Deep Silver, Volition, THQ, Microsoft "
         "or Sony. Saints Row and all related names belong to their owners. No game files are included: you need your "
         "own copies of Saints Row and Saints Row 2 for the Xbox 360.";
     dl->AddText(g_body, 24 * u, ImVec2(px, py), P(kGrey), note, nullptr, pw);
@@ -1375,7 +1375,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     py += 36 * u;
     dl->AddText(g_body, 22 * u, ImVec2(px, py), P(kGrey),
                 "PS5 Payload SDK  /  Mesa RADV (Vulkan)  /  Dear ImGui\nstb_image, dr_mp3, zlib, xxHash  /  Oswald and "
-                "Inter, Black Ops One (SIL Open Font License)\nBlackBearReloaded's PS5 AT9 Converter (the home screen music)",
+                "Inter, Pirata One (SIL Open Font License)\nBlackBearReloaded's PS5 AT9 Converter (the home screen music)",
                 nullptr, pw);
   }
 

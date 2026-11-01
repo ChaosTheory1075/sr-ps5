@@ -7,7 +7,7 @@ in one app, by ChaosTheory1075.
 > work from [saulob's Crackdown Recompiled](https://github.com/saulob/crackdown-xbox360-recompiled).
 > All the credit goes to them.
 
-An unofficial fan project, not affiliated with or endorsed by Activision, Radical Entertainment,
+An unofficial fan project, not affiliated with or endorsed by Deep Silver, Volition, THQ,
 Microsoft or Sony. **No game files are included:** you need your own copies of the games for the
 Xbox 360.
 
@@ -72,8 +72,8 @@ menu's and home screen's art from your own pictures.
 - **ReXGlue** and the **Xenia** team
 - **BlackBearReloaded**: the PS5 AT9 Converter (the home screen music)
 - Built with the PS5 Payload SDK, Mesa RADV, Dear ImGui, stb_image, dr_mp3, zlib, xxHash, and the
-  Oswald, Inter and Black Ops One fonts (SIL Open Font License)
-- Special thanks to **Radical Entertainment**, for Saints Row
+  Oswald, Inter and Pirata One fonts (SIL Open Font License)
+- Special thanks to **Volition**, for Saints Row
 
 ## License
 GNU General Public License v3.0 (see [LICENSE](LICENSE)), as GTA IV for PS5 is. No game files are
