@@ -183,6 +183,8 @@ std::vector<LuaResult> Run(PPCContext& ctx, uint8_t* base, uint32_t L, const std
 }
 
 void OnPcall(PPCContext& ctx, uint8_t* base) {
+  static std::atomic<uint32_t> calls{0};
+  if (calls.fetch_add(1) == 0) REXLOG_INFO("SAINTS ROW: ReInstated: the game's first script call (state {:08X})", ctx.r3.u32);
   if (t_busy || !ctx.r3.u32) return;
   // Not while the game is starting: 45 s after its first script call.
   static const uint64_t first_call_ms = SDL_GetTicks();
@@ -266,6 +268,9 @@ void LuaSetTick(std::function<std::vector<LuaCall>()> make,
 // chunk, as its offset, in case the stack grew.
 extern "C" void sub_8250EB28(PPCContext& __restrict ctx, uint8_t* base) {
   const uint32_t lr = uint32_t(ctx.lr);
+  static std::atomic<uint32_t> seen{0};
+  if (const uint32_t n = seen.fetch_add(1); n < 3 || n == 1000 || n == 100000)
+    REXLOG_INFO("SAINTS ROW: ReInstated: luaD_call #{} from LR {:08X}", n, lr);
   if (lr && (lr < 0x82504000 || lr >= 0x82520000)) {
     const uint32_t L = ctx.r3.u32;
     auto* kernel = REX_KERNEL_STATE();
