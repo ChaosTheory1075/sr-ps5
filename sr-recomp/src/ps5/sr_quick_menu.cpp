@@ -153,8 +153,15 @@ void SaveCheats() {
   std::fclose(f);
 }
 
-// The player, in the chunks (Lua): the scripts' LOCAL_PLAYER ("#PLAYER1#", ug_lib.lua).
+// The player, in the chunks (Lua): Saints Row's scripts name him "#PLAYER#"; Saints Row 2's
+// LOCAL_PLAYER ("#PLAYER1#", ug_lib.lua). And each game's notoriety teams, as their scripts reset them.
+#if SR_GAME == 1
+constexpr const char* kPlayerLua = "local P = '#PLAYER#'\n";
+constexpr const char* kGangs = "'police', 'los_carnales', 'vice_kings', 'rollers'";
+#else
 constexpr const char* kPlayerLua = "local P = LOCAL_PLAYER or '#PLAYER1#'\n";
+constexpr const char* kGangs = "'police', 'ronin', 'brotherhood', 'samedi'";
+#endif
 
 // The tick: the cheats held, and the player's state for the DualSense ("<health> <max> <in game>").
 // The games' own script API, as their missions call it: turn_invulnerable / turn_vulnerable,
@@ -207,12 +214,8 @@ void RunAction(int action) {
                  [](const std::string& out) { LogResult("cash", out); });
       break;
     case kClearNotoriety:
-      LuaRunOnce(player + R"LUA(if notoriety_reset == nil then return 'no notoriety_reset' end
-for _, t in ipairs({'police', 'ronin', 'brotherhood', 'samedi', 'los carnales', 'rollerz', 'vice kings', 'westsiders'}) do
-  pcall(notoriety_reset, t)
-end
-return 'cleared'
-)LUA",
+      LuaRunOnce(player + "if notoriety_reset == nil then return 'no notoriety_reset' end\nfor _, t in ipairs({" +
+                     kGangs + "}) do pcall(notoriety_reset, t) end\nreturn 'cleared'\n",
                  [](const std::string& out) { LogResult("notoriety", out); });
       break;
     case kToggleHud: {
@@ -243,9 +246,12 @@ std::vector<Row> Rows() {
     rows.push_back({first ? "CHEATS" : nullptr, kCheats[i].label, kRowCheat, i});
     first = false;
   }
-  rows.push_back({"ACTIONS", "Give $10,000", kRowAction, kCash});
-  rows.push_back({nullptr, "Clear Notoriety", kRowAction, kClearNotoriety});
+  rows.push_back({"ACTIONS", "Clear Notoriety", kRowAction, kClearNotoriety});
+#if SR_GAME == 2
+  // (Saints Row's scripts have no cash_add or hud_hide)
+  rows.push_back({nullptr, "Give $10,000", kRowAction, kCash});
   rows.push_back({nullptr, "Show / Hide HUD", kRowAction, kToggleHud});
+#endif
   rows.push_back({"DISPLAY", "FPS Counter", kRowFps, 0});
   rows.push_back({"CONTROLLER", "DualSense Features", kRowDualSense, 0});
   return rows;

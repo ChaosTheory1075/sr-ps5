@@ -66,7 +66,8 @@ In the games
 L3 + R3 (both sticks pressed in) opens the quick menu over the game:
 - CHEATS   God Mode, No Police Notoriety, Enemies Ignore You. Kept on
            between sessions (cheats1.ini, cheats2.ini).
-- ACTIONS  Give $10,000, Clear Notoriety, Show / Hide HUD.
+- ACTIONS  Clear Notoriety; in Saints Row 2 also Give $10,000 and
+           Show / Hide HUD.
 - DISPLAY  the FPS counter.
 - the DualSense features.
 UP / DOWN moves, LEFT / RIGHT or X changes, O (or L3 + R3) closes it.

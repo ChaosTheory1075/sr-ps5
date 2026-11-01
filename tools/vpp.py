@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Volition packfiles (Saints Row's and Saints Row 2's .vpp_xbox2, version 4): list or extract.
+"""Volition packfiles (Saints Row's .vpp_xbox2, version 3, and Saints Row 2's, version 4): list or
+extract.
 
     vpp.py <packfile> list
     vpp.py <packfile> extract <out dir> [name filter, e.g. .lua]
@@ -9,7 +10,8 @@ then at 0x14C the flags (1: compressed with zlib; 2: condensed - all files one z
 count, the package size and the index, names and extensions sections' sizes, the data's
 uncompressed and compressed sizes. The sections follow, each aligned to 2048 bytes: the index (28
 bytes a file: name and extension offsets, -, data offset, size, compressed size, -), the names, the
-extensions, the data.
+extensions, the data. Version 3 has no extensions section (the names carry them): its sizes at
+0x154 are the count, package, index and names sizes, then the data's uncompressed and compressed.
 """
 import os
 import struct
@@ -24,18 +26,25 @@ def align(v, a=2048):
 def read(path):
     d = open(path, "rb").read()
     magic, version = struct.unpack_from(">II", d, 0)
-    if magic != 0x51890ACE or version != 4:
-        sys.exit(f"{path}: not a version 4 packfile ({magic:08X} v{version})")
-    flags, _, count, _size, isize, nsize, esize, usize, csize = struct.unpack_from(">9I", d, 0x14C)
+    if magic != 0x51890ACE or version not in (3, 4):
+        sys.exit(f"{path}: not a version 3 or 4 packfile ({magic:08X} v{version})")
+    if version == 4:
+        flags, _, count, _size, isize, nsize, esize, usize, csize = struct.unpack_from(">9I", d, 0x14C)
+    else:
+        flags, _, count, _size, isize, nsize, usize, csize = struct.unpack_from(">8I", d, 0x14C)
+        esize = 0
     index = 0x800
     names = align(index + isize)
     exts = align(names + nsize)
-    data = align(exts + esize)
+    data = align(exts + esize) if esize else exts
     cstr = lambda o: d[o:d.index(b"\0", o)].decode("latin-1")
     files = []
     for i in range(count):
         no, eo, _, off, size, comp, _ = struct.unpack_from(">7I", d, index + i * 28)
-        files.append((cstr(names + no) + "." + cstr(exts + eo), off, size, comp))
+        if version == 4:
+            files.append((cstr(names + no) + "." + cstr(exts + eo), off, size, comp))
+        else:
+            files.append((cstr(names + no), struct.unpack_from(">I", d, index + i * 28 + 8)[0], size, comp))
     blob = None
     if flags & 2:  # condensed: one stream
         blob = zlib.decompress(d[data:data + csize]) if flags & 1 else d[data:data + usize]
