@@ -322,3 +322,32 @@ extern "C" void sub_827708A8(PPCContext& __restrict ctx, uint8_t* base) {
   __imp__sub_827708A8(ctx, base);
 }
 #endif
+
+#if REX_PLATFORM_PS5 && SR_GAME == 1
+// ...and the update itself (827644C8, r3 the lobby: null offline, its first read at +0x38) from the
+// main loop's network tick (8236A24C). No lobby, nothing to update.
+extern "C" void sub_827644C8(PPCContext& __restrict ctx, uint8_t* base) {
+  if (ctx.r3.u32 < 0x10000) {
+    static bool logged = false;
+    if (!logged) REXLOG_INFO("Saints Row: offline: no lobby to update");
+    logged = true;
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_827644C8(ctx, base);
+}
+#endif
+
+#if REX_PLATFORM_PS5 && SR_GAME == 1
+// The main loop's network tick (82704558, from 8236A1F0 with the network object 8236B270 returned:
+// null offline, as it deletes the one it made when the network doesn't come up). No object, no tick.
+extern "C" void sub_82704558(PPCContext& __restrict ctx, uint8_t* base) {
+  if (ctx.r3.u32 < 0x10000) {
+    static bool logged = false;
+    if (!logged) REXLOG_INFO("Saints Row: offline: no network object, its tick skipped");
+    logged = true;
+    return;
+  }
+  __imp__sub_82704558(ctx, base);
+}
+#endif

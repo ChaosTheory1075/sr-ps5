@@ -40,6 +40,7 @@ constexpr uint32_t kGetS = 0x825073E0, kFCall = 0x82505FD0;
 const GuestFn kLoadBuffer = sub_829CE7D8, kPcall = sub_829CB108, kToString = sub_829CA4A8, kSetTop = sub_829C9E58;
 #endif
 
+constexpr bool kLuaBridgeOff = true;
 constexpr uint32_t kBufferSize = 64 * 1024;  // (the chunk name, then the chunk)
 constexpr char kChunkName[] = "=ReInstated";
 
@@ -137,6 +138,10 @@ void Report(const std::string& out) {
 
 void OnPcall(PPCContext& ctx, uint8_t* base) {
   if (t_busy || !ctx.r3.u32) return;
+  // Off for now: Saints Row 2's parser crashed compiling our first chunk (luaK_checkstack, fs->f
+  // null) even 45 s into the game, called exactly as its own luaB_loadstring calls luaL_loadbuffer.
+  // To come back as direct API calls (getglobal, push, pcall: no parser).
+  if (kLuaBridgeOff) return;
   // Not while the game is starting: Saints Row 2 crashed compiling our first chunk among its own
   // start-up script calls (the parser's prototype not there yet). 45 s after its first script call.
   static const uint64_t first_call_ms = SDL_GetTicks();
