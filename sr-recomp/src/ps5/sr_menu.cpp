@@ -1229,19 +1229,31 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
 
   void DrawSettings(ImDrawList* dl, const ImVec2& size) {
     const float u = u_, left = 140 * u + page_dx_;
-    float y = 190 * u;
     const auto lines = SettingsLines();
-    const char* section = nullptr;
+    const float fs = 36 * u, top = 190 * u, bottom = size.y - 120 * u;
+    // where each row and section heading goes (scrolled so the focused row stays in view)
+    std::vector<float> row_y(kSettingsRows, 0.0f), head_y(kSettingsRows, -1.0f);
+    float y = 0;
     for (int r = 0; r < kSettingsRows; ++r) {
-      const SettingLine& l = lines[size_t(r)];
-      if (!section || std::strcmp(section, l.section) != 0) {
-        section = l.section;
+      if (!r || std::strcmp(lines[size_t(r - 1)].section, lines[size_t(r)].section) != 0) {
         if (r) y += 14 * u;
-        Spaced(dl, g_body, 19 * u, ImVec2(left, y), P(kRed), section, 3 * u);
+        head_y[size_t(r)] = y;
         y += 36 * u;
       }
+      row_y[size_t(r)] = y;
+      y += fs + 16 * u;
+    }
+    const float view = bottom - top;
+    const float want = std::clamp(row_y[size_t(row_)] - view * 0.45f, 0.0f, std::max(0.0f, y - view));
+    settings_scroll_ += (want - settings_scroll_) * 0.25f;
+    dl->PushClipRect(ImVec2(0, top - 4 * u), ImVec2(1000 * u + page_dx_, bottom), true);
+    for (int r = 0; r < kSettingsRows; ++r) {
+      const SettingLine& l = lines[size_t(r)];
+      if (head_y[size_t(r)] >= 0)
+        Spaced(dl, g_body, 19 * u, ImVec2(left, top + head_y[size_t(r)] - settings_scroll_), P(kRed), l.section,
+               3 * u);
+      y = top + row_y[size_t(r)] - settings_scroll_;
       const bool sel = r == row_;
-      const float fs = 36 * u;
       const ImU32 col = !l.enabled ? kDim : sel ? kWhite : kGrey;
       if (sel) dl->AddRectFilled(ImVec2(left - 30 * u, y + 8 * u), ImVec2(left - 20 * u, y + fs), P(kRed));
       dl->AddText(g_item, fs, ImVec2(left, y), P(col), l.label);
@@ -1253,8 +1265,8 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         dl->AddRectFilled(ImVec2(x0, yy - 3 * u), ImVec2(x0 + w * settings_.music / 100.0f, yy + 3 * u),
                           P(sel ? kRed : kGrey));
       }
-      y += fs + 16 * u;
     }
+    dl->PopClipRect();
     // the focused row's help, at the right
     const float px = 1060 * u + page_dx_, pw = 720 * u;
     dl->AddRectFilled(ImVec2(px - 40 * u, 190 * u), ImVec2(px - 39 * u, 760 * u), P(IM_COL32(255, 255, 255, 40)));
@@ -1381,19 +1393,20 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   }
 
   void DrawCredits(ImDrawList* dl, const ImVec2& size) {
-    const float u = u_, x = 140 * u + page_dx_, w = 820 * u;
+    const float u = u_, x = 140 * u + page_dx_, w = 860 * u;
     float y = 180 * u;
+    dl->PushClipRect(ImVec2(0, 0), ImVec2(size.x, size.y - 120 * u), true);  // (not into the clock)
     auto entry = [&](const char* name, const char* text) {
-      dl->AddText(g_item, 32 * u, ImVec2(x, y), P(kWhite), name);
-      y += 44 * u;
-      dl->AddText(g_body, 24 * u, ImVec2(x, y), P(kGrey), text, nullptr, w);
-      y += g_body->CalcTextSizeA(24 * u, FLT_MAX, w, text).y + 28 * u;
+      dl->AddText(g_item, 26 * u, ImVec2(x, y), P(kWhite), name);
+      y += 34 * u;
+      dl->AddText(g_body, 20 * u, ImVec2(x, y), P(kGrey), text, nullptr, w);
+      y += g_body->CalcTextSizeA(20 * u, FLT_MAX, w, text).y + 20 * u;
     };
     // the project
     dl->AddText(g_title, 60 * u, ImVec2(x, y - 6 * u), P(kWhite), "SAINTS ROW");
     const float tw = Width(g_title, 60 * u, "SAINTS ROW");
     Spaced(dl, g_item, 30 * u, ImVec2(x + tw + 22 * u, y + 24 * u), P(kRed), "REINSTATED", 6 * u);
-    y += 96 * u;
+    y += 84 * u;
     entry("BY CHAOSTHEORY1075", "github.com/ChaosTheory1075/sr-ps5");
     dl->AddText(g_body, 20 * u, ImVec2(x, y), P(kRed), "ALL THE CREDIT GOES TO");
     y += 40 * u;
@@ -1418,13 +1431,13 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       const char* thanks =
           "For Stilwater and the 3rd Street Saints: Julius, Johnny Gat, Troy, Dex, Shaundi, Pierce and Carlos, "
           "the purple flag, and a city to take back block by block.";
-      const float th = g_body->CalcTextSizeA(26 * u, FLT_MAX, pw - 48 * u, thanks).y;
+      const float th = g_body->CalcTextSizeA(22 * u, FLT_MAX, pw - 48 * u, thanks).y;
       dl->AddRectFilled(ImVec2(px - 24 * u, py - 16 * u), ImVec2(px + pw, py + 96 * u + th),
                         P(IM_COL32(8, 8, 8, 170)), 6 * u);
       dl->AddRectFilled(ImVec2(px - 24 * u, py - 16 * u), ImVec2(px - 18 * u, py + 96 * u + th), P(kRed));
       dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), "SPECIAL THANKS");
       dl->AddText(g_item, 40 * u, ImVec2(px, py + 30 * u), P(kWhite), "VOLITION");
-      dl->AddText(g_body, 26 * u, ImVec2(px, py + 84 * u), P(kGrey), thanks, nullptr, pw - 48 * u);
+      dl->AddText(g_body, 22 * u, ImVec2(px, py + 84 * u), P(kGrey), thanks, nullptr, pw - 48 * u);
       py += 96 * u + th + 46 * u;
     }
     if (!song_.empty()) {
@@ -1438,14 +1451,15 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         "An unofficial fan project, not affiliated with or endorsed by Deep Silver, Volition, THQ, Microsoft "
         "or Sony. Saints Row and all related names belong to their owners. No game files are included: you need your "
         "own copies of Saints Row and Saints Row 2 for the Xbox 360.";
-    dl->AddText(g_body, 24 * u, ImVec2(px, py), P(kGrey), note, nullptr, pw);
-    py += g_body->CalcTextSizeA(24 * u, FLT_MAX, pw, note).y + 36 * u;
+    dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kGrey), note, nullptr, pw);
+    py += g_body->CalcTextSizeA(20 * u, FLT_MAX, pw, note).y + 28 * u;
     dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), "BUILT WITH");
     py += 36 * u;
-    dl->AddText(g_body, 22 * u, ImVec2(px, py), P(kGrey),
+    dl->AddText(g_body, 19 * u, ImVec2(px, py), P(kGrey),
                 "PS5 Payload SDK  /  Mesa RADV (Vulkan)  /  Dear ImGui\nstb_image, dr_mp3, zlib, xxHash  /  Oswald and "
                 "Inter, Pirata One (SIL Open Font License)\nBlackBearReloaded's PS5 AT9 Converter (the home screen music)",
                 nullptr, pw);
+    dl->PopClipRect();
   }
 
   // ---- files ----
@@ -1510,6 +1524,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   uint64_t leftover_bytes_ = 0;
   Page page_ = kHome;
   int row_ = kAntiAliasing, trophy_ = 0;
+  float settings_scroll_ = 0;  // (the settings list's scroll, eased)
   trophies::List trophies_;
   std::vector<Item> items_;
   std::map<uint32_t, Image> pictures_;
