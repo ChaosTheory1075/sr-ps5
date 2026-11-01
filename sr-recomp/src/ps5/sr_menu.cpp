@@ -147,7 +147,9 @@ class Pad {
 // ---- the settings (app/menu.ini: key=value lines) ----
 
 struct Settings {
-  bool fxaa = false;  // swap_post_effect: none or fxaa
+  int aa = 2;         // swap_post_effect: 0 none, 1 fxaa, 2 smaa (Max Payne 3 RePrescribed's)
+  bool fsr = true;    // the picture's stretch to the TV: FSR 1 (present_effect fsr) or bilinear
+  int sharpness = 3;  // FSR 1's sharpening (present_fsr_sharpness_reduction): 1 low, 2 medium, 3 high
   bool fps60 = false;  // FRAME RATE 60: the guest's vblanks twice as fast (guest_vblank_scale 2)
   int filter = 3;     // anisotropic_override 2..5: 2x, 4x, 8x, 16x
   bool lane = true;   // the GPU's second lane (crackdown_gpu_lane)
@@ -174,6 +176,10 @@ struct Settings {
   }
 
   static constexpr const char* kFilterNames[] = {"", "", "2X", "4X", "8X", "16X"};
+  static constexpr const char* kAaNames[] = {"OFF", "FXAA", "SMAA"};
+  static constexpr const char* kSharpnessNames[] = {"", "LOW", "MEDIUM", "HIGH"};
+  // FSR 1's RCAS sharpness reduction in stops (0 = sharpest) for each sharpness.
+  static constexpr const char* kSharpnessStops[] = {"", "1.0", "0.5", "0.2"};
   static constexpr const char* kFpsModes[] = {"off", "simple", "detailed"};
 
   static Settings Load(const fs::path& app) {
@@ -185,7 +191,10 @@ struct Settings {
         int value = 0;
         if (std::sscanf(line, " %63[a-z_] = %d", key, &value) != 2) continue;
         const std::string k(key);
-        if (k == "fxaa") s.fxaa = value != 0;
+        if (k == "fxaa" && value) s.aa = 1;  // (the earlier on/off row's)
+        if (k == "anti_aliasing") s.aa = std::clamp(value, 0, 2);
+        if (k == "upscaling_fsr") s.fsr = value != 0;
+        if (k == "fsr_sharpness") s.sharpness = std::clamp(value, 1, 3);
         if (k == "frame_rate") s.fps60 = value == 60;
         if (k == "texture_filtering") s.filter = std::clamp(value, 2, 5);
         if (k == "gpu_lane") s.lane = value != 0;
@@ -206,9 +215,10 @@ struct Settings {
   void Save(const fs::path& app) const {
     if (std::FILE* f = std::fopen((app / "menu.ini").string().c_str(), "wb")) {
       std::fprintf(f,
-                   "fxaa = %d\ntexture_filtering = %d\ngpu_lane = %d\nmenu_music = %d\ngame = %d\nfps_counter = %d\n"
+                   "anti_aliasing = %d\nupscaling_fsr = %d\nfsr_sharpness = %d\n"
+                   "texture_filtering = %d\ngpu_lane = %d\nmenu_music = %d\ngame = %d\nfps_counter = %d\n"
                    "dualsense = %d\nps_prompts = %d\nskip_intro = %d\nradnet = %d\nframe_rate = %d\nlanguage = %d\n",
-                   fxaa ? 1 : 0, filter, lane ? 1 : 0, music, game, fps, dualsense ? 1 : 0, ps_prompts ? 1 : 0,
+                   aa, fsr ? 1 : 0, sharpness, filter, lane ? 1 : 0, music, game, fps, dualsense ? 1 : 0, ps_prompts ? 1 : 0,
                    skip_intro ? 1 : 0, radnet ? 1 : 0, fps60 ? 60 : 30, language);
       std::fclose(f);
     }
@@ -223,7 +233,9 @@ struct Settings {
     rex::cvar::SetFlagByName("vsync", "true");
     // (both games wait two vblanks a frame: their 30 fps, or 60 with the vblanks twice as fast)
     rex::cvar::SetFlagByName("guest_vblank_scale", fps60 ? "2" : "1");
-    rex::cvar::SetFlagByName("swap_post_effect", fxaa ? "fxaa" : "none");
+    rex::cvar::SetFlagByName("swap_post_effect", aa == 2 ? "smaa" : aa == 1 ? "fxaa" : "none");
+    rex::cvar::SetFlagByName("present_effect", fsr ? "fsr" : "bilinear");
+    rex::cvar::SetFlagByName("present_fsr_sharpness_reduction", kSharpnessStops[sharpness]);
     rex::cvar::SetFlagByName("anisotropic_override", std::to_string(filter));
     rex::cvar::SetFlagByName("crackdown_gpu_lane", lane ? "true" : "false");
     rex::cvar::SetFlagByName("sr_fps_counter", kFpsModes[fps]);
@@ -233,10 +245,10 @@ struct Settings {
     // (the games' text follows XGetLanguage; one Saints Row's disc hasn't: English there)
     const Language& lang = kLanguages[LanguageIndex(language)];
     rex::cvar::SetFlagByName("user_language", std::to_string(SR_GAME == 1 && !lang.p1 ? 1 : lang.id));
-    REXLOG_INFO("SAINTS ROW: ReInstated menu: frame rate {}, anti-aliasing {}, texture filtering {}, the GPU's second lane {}, "
+    REXLOG_INFO("SAINTS ROW: ReInstated menu: frame rate {}, upscaling {} (sharpness {}), anti-aliasing {}, texture filtering {}, the GPU's second lane {}, "
                 "frame rate counter {}, DualSense features {}, button prompts {}, skip intro {}, Radnet events {}, "
                 "language {}",
-                fps60 ? 60 : 30, fxaa ? "FXAA" : "off", kFilterNames[filter], lane ? "on" : "off", kFpsModes[fps],
+                fps60 ? 60 : 30, fsr ? "FSR 1" : "bilinear", kSharpnessNames[sharpness], kAaNames[aa], kFilterNames[filter], lane ? "on" : "off", kFpsModes[fps],
                 dualsense ? "on" : "off", ps_prompts ? "PlayStation" : "Xbox", skip_intro ? "on" : "off",
                 radnet ? "unlocked" : "as on the disc", lang.name);
   }
@@ -297,7 +309,7 @@ const char* const kPageNames[kPages] = {"HOME", "CONTENT", "SAVES", "SETTINGS", 
 // The settings page's rows, in its order (a new option: a row here, its line
 // in SettingsLines and its change in ChangeSetting).
 enum SettingsRow {
-  kFrameRate, kAntiAliasing, kFiltering, kLane, kFps, kPrompts, kDualSense, kLanguage, kSkipIntro, kMusic, kSettingsRows
+  kFrameRate, kUpscaling, kSharpness, kAntiAliasing, kFiltering, kLane, kFps, kPrompts, kDualSense, kLanguage, kSkipIntro, kMusic, kSettingsRows
 };
 
 class MenuDialog final : public rex::ui::ImGuiDialog {
@@ -580,9 +592,18 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
                          "30 is the frame rate both games were made for on the Xbox 360. 60 lets them run twice as "
                          "often - as their PC versions can - wherever the PS5 keeps up: busy scenes fall between "
                          "the two. Experimental: if anything plays too fast or stutters, set it back to 30."};
-    lines[kAntiAliasing] = {"GRAPHICS", "ANTI-ALIASING", settings_.fxaa ? "FXAA" : "OFF", true,
-                            "FXAA smooths the jagged edges of the picture as it goes to the screen. It costs the PS5's "
-                            "GPU a little and blurs fine detail slightly."};
+    lines[kUpscaling] = {"GRAPHICS", "UPSCALING", settings_.fsr ? "FSR 1" : "BILINEAR", true,
+                         "How the picture is enlarged to your TV's resolution (up to 4K). FSR 1, AMD's upscaler, keeps "
+                         "edges and detail sharp at almost no cost to the frame rate; BILINEAR is a plain, softer "
+                         "stretch."};
+    lines[kSharpness] = {"GRAPHICS", "SHARPNESS", settings_.fsr ? Settings::kSharpnessNames[settings_.sharpness] : "-",
+                         settings_.fsr,
+                         "How much FSR 1 sharpens the enlarged picture. HIGH is crispest but can make edges look "
+                         "harsh; LOW is gentler."};
+    lines[kAntiAliasing] = {"GRAPHICS", "ANTI-ALIASING", Settings::kAaNames[settings_.aa], true,
+                            "Smooths jagged edges before the picture is enlarged. SMAA finds edges by their shape and "
+                            "keeps the rest sharp; FXAA is a little cheaper but blurs fine detail. Both cost the "
+                            "PS5's GPU very little."};
     lines[kFiltering] = {"GRAPHICS", "TEXTURE FILTERING",
                          std::string(Settings::kFilterNames[settings_.filter]) + " ANISOTROPIC", true,
                          "How sharp floors, walls and streets stay when seen at an angle. Higher is sharper; the PS5's "
@@ -619,8 +640,17 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       case kFrameRate:
         if (flip) settings_.fps60 = !settings_.fps60;
         break;
+      case kUpscaling:
+        if (flip) settings_.fsr = !settings_.fsr;
+        break;
+      case kSharpness:
+        if (!settings_.fsr) break;
+        if (cross) settings_.sharpness = settings_.sharpness % 3 + 1;
+        settings_.sharpness = std::clamp(settings_.sharpness + step, 1, 3);
+        break;
       case kAntiAliasing:
-        if (flip) settings_.fxaa = !settings_.fxaa;
+        if (cross) settings_.aa = (settings_.aa + 1) % 3;
+        settings_.aa = std::clamp(settings_.aa + step, 0, 2);
         break;
       case kFiltering:
         if (cross) settings_.filter = settings_.filter == 5 ? 2 : settings_.filter + 1;

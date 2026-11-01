@@ -18,6 +18,8 @@
 #include <rex/system/util/object_table.h>
 #include <rex/system/xthread.h>
 #include <rex/ui/overlay/achievement_notification.h>
+#include <rex/ui/presenter.h>
+#include <rex/system/interfaces/graphics.h>
 #if REX_PLATFORM_PS5
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -34,6 +36,9 @@
 #include "ps5/sr_trophies_game.h"
 
 namespace fs = std::filesystem;
+
+REXCVAR_DECLARE(std::string, present_effect);  // (the presenter's, ui/presenter.cpp)
+REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
 
 namespace {
 
@@ -112,18 +117,36 @@ std::optional<rex::PathConfig> SrApp::OnFinalizePaths(const rex::PathConfig& def
 #if SR_GAME == 1
   // The menu first (sr_menu.cpp). PLAY on Saints Row carries on with the start; on Saints Row 2 the
   // menu starts sr2.bin instead (srps5::StartGame).
-  srps5::ShowMenu(imgui_drawer(), immediate_drawer(), AppRoot(defaults),
-                     [defaults, resume](srps5::MenuChoice) { resume(ResolvePaths(defaults)); });
+  srps5::ShowMenu(imgui_drawer(), immediate_drawer(), AppRoot(defaults), [this, defaults, resume](srps5::MenuChoice) {
+    ApplyUpscaling();
+    resume(ResolvePaths(defaults));
+  });
   return std::nullopt;
 #else
   // Started by the menu (eboot.bin's): its settings, and on with the game.
   (void)resume;
   srps5::ApplySettings(AppRoot(defaults));
+  ApplyUpscaling();
   return ResolvePaths(defaults);
 #endif
 #else
   (void)resume;
   return ResolvePaths(defaults);
+#endif
+}
+
+// The UPSCALING and SHARPNESS settings (present_effect, present_fsr_sharpness_reduction, set by the
+// menu): the window's presenter read them when it started, before the menu, so it gets them here
+// (Max Payne 3 RePrescribed's).
+void SrApp::ApplyUpscaling() {
+#if REX_PLATFORM_PS5
+  if (rex::ui::Presenter* presenter = graphics_system() ? graphics_system()->presenter() : nullptr) {
+    using Config = rex::ui::Presenter::GuestOutputPaintConfig;
+    Config config = presenter->GetGuestOutputPaintConfigFromUIThread();
+    config.SetEffect(REXCVAR_GET(present_effect) == "fsr" ? Config::Effect::kFsr : Config::Effect::kBilinear);
+    config.SetFsrSharpnessReduction(float(REXCVAR_GET(present_fsr_sharpness_reduction)));
+    presenter->SetGuestOutputPaintConfigFromUIThread(config);
+  }
 #endif
 }
 
@@ -391,4 +414,34 @@ extern "C" void sub_82938428(PPCContext& __restrict ctx, uint8_t* base) {
   __imp__sub_82938428(ctx, base);
 }
 #endif
+#endif
+
+#if REX_PLATFORM_PS5 && SR_GAME == 2
+// BUTTON PROMPTS PlayStation: Saints Row 2 was made for the PS3 too, and its disc still has the PS3's
+// button pictures (ui_ctrl_ps3_btn_cross..., ui_btnmash_ps3, ui_controls_ps3); its menus and HUD scripts
+// pick them by asking get_platform() (824E9DE8: pushes "XBOX360"). It answers "PS3" while the menu's
+// BUTTON PROMPTS is PlayStation. (What else the scripts change for "PS3" is the online menus, the
+// cellphone's cheat warning and the pause menu's achievements page: nothing a PS5 player misses.)
+REXCVAR_DECLARE(bool, sr_ps_prompts);
+extern "C" void sub_824E9DE8(PPCContext& __restrict ctx, uint8_t* base) {
+  if (!REXCVAR_GET(sr_ps_prompts)) {
+    __imp__sub_824E9DE8(ctx, base);
+    return;
+  }
+  static uint32_t ps3 = 0;
+  if (!ps3) {
+    auto* kernel = REX_KERNEL_STATE();
+    if (kernel && (ps3 = kernel->memory()->SystemHeapAlloc(8)) != 0) {
+      std::memcpy(kernel->memory()->TranslateVirtual<char*>(ps3), "PS3", 4);
+      REXLOG_INFO("Saints Row 2: get_platform answers PS3 (PlayStation button prompts)");
+    }
+  }
+  if (!ps3) {
+    __imp__sub_824E9DE8(ctx, base);
+    return;
+  }
+  ctx.r4.u64 = ps3;
+  sub_829CA8A8(ctx, base);  // lua_pushstring(L, "PS3")
+  ctx.r3.u64 = 1;
+}
 #endif
