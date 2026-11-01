@@ -82,7 +82,7 @@ cat > "$app/sce_sys/param.json" <<EOF
   "attribute3": 262208,
   "conceptId": "${title_id:4}",
   "contentBadgeType": 1,
-  "contentId": "UP9000-${title_id}_00-SRREEVOLUTION",
+  "contentId": "UP9000-${title_id}_00-SRREINSTATED",
   "contentVersion": "01.000.000",
   "downloadDataSize": 256,
   "gameIntent": { "permittedIntents": [ { "intentType": "launchActivity" } ] },

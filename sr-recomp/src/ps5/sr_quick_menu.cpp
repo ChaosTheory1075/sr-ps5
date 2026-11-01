@@ -537,6 +537,8 @@ return 'player ' .. type(P) .. ' ' .. tostring(P) .. ', health ' .. v(go_GetHeal
 }  // namespace srps5
 
 // The title's XInputGetState: r3 the user, r4 the state; returns 0 when read.
+// (Prototype's addresses: off until Saints Row's own are found, SR_GAME_HOOKS in CMakeLists.txt)
+#if SR_GAME_HOOKS
 #if SR_GAME == 1
 extern "C" void sub_82B3DDA8(PPCContext& __restrict ctx, uint8_t* base) {
   const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
@@ -580,5 +582,6 @@ extern "C" void sub_822D0478(PPCContext& __restrict ctx, uint8_t* base) {
   __imp__sub_822D0478(ctx, base);
 }
 #endif
+#endif  // SR_GAME_HOOKS
 
 #endif  // REX_PLATFORM_PS5

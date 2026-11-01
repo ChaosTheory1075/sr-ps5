@@ -34,7 +34,7 @@ function(sr_game game)
         endif()
         set_property(SOURCE src/ps5/sr_prompts.cpp APPEND PROPERTY OBJECT_DEPENDS "${sr_prompts_bin}")
         add_executable(${target} ${app_sources} ${GENERATED_SOURCES})
-        target_compile_definitions(${target} PRIVATE SR_GAME=${game} "SR_INIT_H=\"sr${game}_init.h\""
+        target_compile_definitions(${target} PRIVATE SR_GAME=${game} SR_GAME_HOOKS=0 "SR_INIT_H=\"sr${game}_init.h\""
             "SRPS5_FONTS_DIR=\"${SR_PS5_FONTS}\"" "SRPS5_PROMPTS_BIN=\"${sr_prompts_bin}\"")
         target_include_directories(${target} PRIVATE "${GTA4_PS5_SRC}")
         # The recompiled game's own files, as gta4-recomp marks GTA IV's.

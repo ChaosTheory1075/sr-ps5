@@ -4,11 +4,13 @@
 // that install, uninstall, import and back up, on a thread of their own.
 //
 //  - The discs: a disc image (.iso, any name) or a folder of its files (anywhere in install/),
-//    told apart by their default.xex's title id: Saints Row's (4156084E) into <app>/game1,
-//    Saints Row 2's (415608A7) into <app>/game2.
-//  - Saints Row 2's DLC packages (any number): each into <app>/dlc2/<its content id>/, the name the
-//    Xbox 360 gives it, whatever the file is called.
-//  - Title updates aren't installed: the programs are the discs' own code.
+//    told apart by their default.xex's title id: Saints Row's (545107D1) into <app>/game1,
+//    Saints Row 2's (545107FC) into <app>/game2.
+//  - The title updates the programs were built from (Saints Row's Title Update 1, Saints Row 2's
+//    Title Update 3): default.xexp beside the disc's default.xex, the rest into <game>/update/.
+//    Another update of either is listed as the wrong one.
+//  - The DLC packages (any number, either game): each into <app>/dlc1|dlc2/<its content id>/, the
+//    name the Xbox 360 gives it, whatever the file is called.
 //  - The PC 4K texture packs (their TexMod packages, .tpf, as extracted): the HD textures in them,
 //    into <app>/textures (sr_textures_install.cpp).
 //  - Saves: Xbox 360 save packages of either game, into <app>/saves the way the runtime keeps
@@ -37,6 +39,7 @@ namespace fs = std::filesystem;
 enum class Kind {
   kGameImage,    // a disc image
   kGameFolder,   // a folder with default.xex
+  kUpdate,      // a title update package (the one the program needs)
   kDlc,
   kSave,         // an Xbox 360 save package
   kBackup,       // one of this app's backups
@@ -60,8 +63,9 @@ struct SaveInfo {
 };
 
 struct Installed {
-  bool game[3] = {};  // [1] game1/, [2] game2/
-  int dlc = 0;        // Saints Row 2's DLC packs in dlc2/
+  bool game[3] = {};    // [1] game1/, [2] game2/
+  bool update[3] = {};  // its title update (default.xexp) beside it
+  int dlc = 0;          // DLC packs in dlc1/ and dlc2/
   int textures = 0;   // HD textures in textures/
   int saves[3] = {};  // each game's
   std::vector<SaveInfo> save_list;  // (the newest first)

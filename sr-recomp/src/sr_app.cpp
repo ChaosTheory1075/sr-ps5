@@ -215,7 +215,7 @@ rex::PathConfig ResolvePaths(const rex::PathConfig& defaults) {
   if (paths.update_data_root.empty() && fs::is_directory(paths.game_data_root / "update", ec))
     paths.update_data_root = paths.game_data_root / "update";
   if (paths.marketplace_content_root.empty())
-    paths.marketplace_content_root = SR_GAME == 2 ? root / "dlc2" : root / "UserData" / "sr1" / "dlc";
+    paths.marketplace_content_root = root / (SR_GAME == 2 ? "dlc2" : "dlc1");
   if (paths.saved_game_root.empty()) paths.saved_game_root = root / "saves";
   fs::create_directories(paths.saved_game_root, ec);
   fs::create_directories(paths.marketplace_content_root, ec);
@@ -226,6 +226,9 @@ rex::PathConfig ResolvePaths(const rex::PathConfig& defaults) {
   if (!fs::exists(paths.game_data_root / "default.xex", ec))
     REXLOG_ERROR("{}: no default.xex in {} (install the game from the menu, see README.txt)", kGameName,
                  paths.game_data_root.string());
+  else if (!fs::exists(paths.game_data_root / "default.xexp", ec))
+    REXLOG_ERROR("{}: no default.xexp in {} (the program is the title update's code: install {})", kGameName,
+                 paths.game_data_root.string(), SR_GAME == 2 ? "Title Update 3" : "Title Update 1");
   return paths;
 }
 

@@ -24,7 +24,7 @@
 REXCVAR_DEFINE_BOOL(sr_skip_intro, true, "SAINTS ROW",
                     "Start the games at their title screens, without the Activision and Radical logos");
 
-#if SR_GAME == 1
+#if SR_GAME == 1 && SR_GAME_HOOKS
 extern "C" void sub_82273D60(PPCContext& __restrict ctx, uint8_t* base) {
   if (REXCVAR_GET(sr_skip_intro) && ctx.r3.u32) {
     auto* kernel = REX_KERNEL_STATE();

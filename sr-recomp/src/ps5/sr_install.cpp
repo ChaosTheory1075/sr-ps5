@@ -59,8 +59,12 @@ using rex::X_STATUS;  // (X_STATUS_SUCCESS names it unqualified)
 namespace {
 
 // [1] Saints Row, [2] Saints Row 2
-constexpr uint32_t kTitleIds[3] = {0, 0x4156084E, 0x415608A7};
-constexpr const char* kTitleFolders[3] = {"", "4156084E", "415608A7"};
+constexpr uint32_t kTitleIds[3] = {0, 0x545107D1, 0x545107FC};
+constexpr const char* kTitleFolders[3] = {"", "545107D1", "545107FC"};
+// The title updates the programs are built from: Saints Row's TU1 and Saints Row 2's TU3 (told
+// apart from Saints Row 2's TU1, the same package version, by their default.xexp's size).
+constexpr uint64_t kUpdateXexpSizes[3] = {0, 1214464, 2301952};
+constexpr const char* kUpdateNames[3] = {"", "Title Update 1", "Title Update 3"};
 constexpr uint32_t kTypeSave = 0x00000001, kTypeDlc = 0x00000002, kTypeUpdate = 0x000B0000;
 // Avatar items (shirts and props for the Xbox 360 avatar): nothing on the PS5 uses them.
 constexpr uint32_t kTypeAvatarItem = 0x00009000;
@@ -71,10 +75,8 @@ constexpr const char* kDefaultSaveName = "SAVEGAME";
 // Which game a title id is (0: neither).
 int GameOf(uint32_t title) { return title == kTitleIds[1] ? 1 : title == kTitleIds[2] ? 2 : 0; }
 fs::path GameFolder(const fs::path& app, int game) { return app / (game == 2 ? "game2" : "game1"); }
-// Each game's DLC (Saints Row has none on the Xbox 360: its folder is out of the way, in UserData/).
-fs::path DlcFolder(const fs::path& app, int game) {
-  return game == 2 ? app / "dlc2" : app / "UserData" / "sr1" / "dlc";
-}
+// Each game's DLC.
+fs::path DlcFolder(const fs::path& app, int game) { return app / (game == 2 ? "dlc2" : "dlc1"); }
 
 std::string Lower(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -90,6 +92,13 @@ fs::path FindChild(const fs::path& dir, const std::string& name) {
   for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
     if (Lower(it->path().filename().string()) == want) return it->path();
   return {};
+}
+
+// Whether a game folder has the title update the program needs.
+bool HasUpdate(const fs::path& game_folder, int game) {
+  std::error_code ec;
+  const fs::path xexp = FindChild(game_folder, "default.xexp");
+  return !xexp.empty() && fs::file_size(xexp, ec) == kUpdateXexpSizes[game];
 }
 
 // An executable's title id: its execution info header (key 0x00040006), 0 when unreadable.
@@ -640,11 +649,17 @@ fs::path Folder(const fs::path& app) {
 Installed Check(const fs::path& app) {
   Installed in;
   std::error_code ec;
-  for (int g = 1; g <= 2; ++g) in.game[g] = !FindChild(GameFolder(app, g), "default.xex").empty();
+  for (int g = 1; g <= 2; ++g) {
+    in.game[g] = !FindChild(GameFolder(app, g), "default.xex").empty();
+    in.update[g] = in.game[g] && HasUpdate(GameFolder(app, g), g);
+  }
   in.textures = TexturesInstalled(app);
-  for (fs::directory_iterator it(DlcFolder(app, 2), ec), end; !ec && it != end; it.increment(ec)) {
-    std::error_code ec2;
-    if (it->is_directory(ec2) && it->path().extension() != ".installing" && !fs::is_empty(it->path(), ec2)) ++in.dlc;
+  for (int g = 1; g <= 2; ++g) {
+    ec.clear();
+    for (fs::directory_iterator it(DlcFolder(app, g), ec), end; !ec && it != end; it.increment(ec)) {
+      std::error_code ec2;
+      if (it->is_directory(ec2) && it->path().extension() != ".installing" && !fs::is_empty(it->path(), ec2)) ++in.dlc;
+    }
   }
   ec.clear();
   for (fs::directory_iterator x(app / "saves", ec), end; !ec && x != end; x.increment(ec)) {
@@ -676,7 +691,7 @@ Installed Check(const fs::path& app) {
 }
 
 bool Automatic(Kind kind) {
-  return kind == Kind::kGameImage || kind == Kind::kGameFolder || kind == Kind::kDlc ||
+  return kind == Kind::kGameImage || kind == Kind::kGameFolder || kind == Kind::kUpdate || kind == Kind::kDlc ||
          kind == Kind::kTexturePack;
 }
 
@@ -764,7 +779,18 @@ std::vector<Source> Scan(const fs::path& app) {
       }
       const std::string name = Narrow(h.name);
       if (h.type == kTypeUpdate) {
-        out.push_back({Kind::kOther, p, (name.empty() ? file : name) + "  (a title update: not needed)", game});
+        // (the one the program needs, by its default.xexp's size)
+        Source s{Kind::kUpdate, p, std::string(kGameNames[game]) + " " + kUpdateNames[game], game};
+        rex::filesystem::StfsContainerDevice package("\\Device\\SrScan", p);
+        rex::filesystem::Entry* root = package.Initialize() ? package.ResolvePath("") : nullptr;
+        rex::filesystem::Entry* xexp = root ? root->GetChild("default.xexp") : nullptr;
+        if (!xexp || xexp->size() != kUpdateXexpSizes[game]) {
+          s.kind = Kind::kOther;
+          s.label = (name.empty() ? file : name) + "  (not " + kUpdateNames[game] + ", the one this app needs)";
+        } else {
+          s.installed = HasUpdate(GameFolder(app, game), game);
+        }
+        out.push_back(s);
       } else if (h.type == kTypeDlc) {
         Source s{Kind::kDlc, p, name.empty() ? file : name, game};
         const std::string content = ContentName(p, h.title);
@@ -897,6 +923,12 @@ bool Job::Install(const fs::path& app, const Source& source) {
           result = source.label + " isn't " + kGameNames[source.game] + "'s disc.";
           return false;
         }
+        // (a title update already installed stays: into the new folder)
+        for (const char* keep : {"default.xexp", "update"}) {
+          const fs::path old = FindChild(game, keep);
+          if (!old.empty()) fs::rename(old, tmp / keep, ec);
+        }
+        ec.clear();
         fs::remove_all(game, ec);
         fs::rename(tmp, game, ec);
         if (ec) {
@@ -905,6 +937,52 @@ bool Job::Install(const fs::path& app, const Source& source) {
         }
         if (source.kind == Kind::kGameImage) Leftover(source.path);
         result = std::string(kGameNames[source.game]) + " is installed.";
+        return true;
+      });
+    case Kind::kUpdate:
+      return Start("Installing " + source.label, [this, app, source](std::string& result) {
+        std::error_code ec;
+        const fs::path game = GameFolder(app, source.game);
+        if (FindChild(game, "default.xex").empty()) {
+          result = std::string("Install ") + kGameNames[source.game] + "'s disc first, then its title update.";
+          return false;
+        }
+        const fs::path tmp = game / "update.installing";
+        fs::remove_all(tmp, ec);
+        rex::filesystem::StfsContainerDevice package("\\Device\\SrUpdate", source.path);
+        rex::filesystem::Entry* root = package.Initialize() ? package.ResolvePath("") : nullptr;
+        if (!root) {
+          result = "Couldn't read " + source.label + ".";
+          return false;
+        }
+        total_ = TotalSize(root);
+        std::string error;
+        if (!EnoughSpace(app, total_, result)) return false;
+        if (!Copier(done_).Children(root, tmp, error)) {
+          fs::remove_all(tmp, ec);
+          result = "Installing " + source.label + " failed: " + error;
+          return false;
+        }
+        // default.xexp beside default.xex; the update's other files (Saints Row 2's patched
+        // packfiles) as the update: device's
+        const fs::path xexp = FindChild(tmp, "default.xexp");
+        if (xexp.empty() || fs::file_size(xexp, ec) != kUpdateXexpSizes[source.game]) {
+          fs::remove_all(tmp, ec);
+          result = source.label + " isn't " + kUpdateNames[source.game] + ".";
+          return false;
+        }
+        const fs::path old_xexp = FindChild(game, "default.xexp"), old_update = FindChild(game, "update");
+        if (!old_xexp.empty()) fs::remove(old_xexp, ec);
+        if (!old_update.empty()) fs::remove_all(old_update, ec);
+        ec.clear();
+        fs::rename(xexp, game / "default.xexp", ec);
+        if (!ec) fs::rename(tmp, game / "update", ec);
+        if (ec) {
+          result = "Couldn't put the title update in place (" + ec.message() + ").";
+          return false;
+        }
+        Leftover(source.path);
+        result = source.label + " is installed.";
         return true;
       });
     case Kind::kDlc:
@@ -1026,7 +1104,7 @@ bool Job::Install(const fs::path& app, const Source& source) {
 bool Job::Uninstall(const fs::path& app, Remove what) {
   const char* name = what == Remove::kGame1   ? "Saints Row"
                      : what == Remove::kGame2 ? "Saints Row 2"
-                     : what == Remove::kDlc   ? "Saints Row 2's DLC"
+                     : what == Remove::kDlc   ? "the DLC"
                                               : "the HD textures";
   return Start(std::string("Removing ") + name, [app, what, name](std::string& result) {
     std::error_code ec;
@@ -1036,8 +1114,10 @@ bool Job::Uninstall(const fs::path& app, Remove what) {
         fs::remove_all(GameFolder(app, what == Remove::kGame2 ? 2 : 1), ec);
         break;
       case Remove::kDlc:
-        fs::remove_all(DlcFolder(app, 2), ec);
-        fs::create_directories(DlcFolder(app, 2), ec);
+        for (int g = 1; g <= 2; ++g) {
+          fs::remove_all(DlcFolder(app, g), ec);
+          fs::create_directories(DlcFolder(app, g), ec);
+        }
         break;
       case Remove::kTextures:
         fs::remove_all(app / "textures", ec);

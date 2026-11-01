@@ -320,12 +320,18 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     // (an install the app was closed during: not to be taken for a finished one)
     fs::remove_all(app / "game1.installing", ec);
     fs::remove_all(app / "game2.installing", ec);
-    for (fs::directory_iterator it(app / "dlc2", ec), end; !ec && it != end; it.increment(ec))
-      if (it->path().extension() == ".installing") fs::remove_all(it->path(), ec);
+    for (const char* dlc : {"dlc1", "dlc2"}) {
+      for (fs::directory_iterator it(app / dlc, ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().extension() == ".installing") fs::remove_all(it->path(), ec);
+      ec.clear();
+    }
+    fs::remove_all(app / "game1" / "update.installing", ec);
+    fs::remove_all(app / "game2" / "update.installing", ec);
     ec.clear();
     Refresh();
-    REXLOG_INFO("SAINTS ROW: ReInstated menu: Saints Row {}, Saints Row 2 {}, {} DLC packs, {} in install/",
-                installed_.game[1] ? "installed" : "MISSING", installed_.game[2] ? "installed" : "MISSING",
+    REXLOG_INFO("SAINTS ROW: ReInstated menu: Saints Row {}{}, Saints Row 2 {}{}, {} DLC packs, {} in install/",
+                installed_.game[1] ? "installed" : "MISSING", installed_.update[1] ? " (TU1)" : " (no TU1)",
+                installed_.game[2] ? "installed" : "MISSING", installed_.update[2] ? " (TU3)" : " (no TU3)",
                 installed_.dlc, sources_.size());
     StartMusic(game_);
     // (the runtime's user data: /app0/UserData/sr1 and sr2)
@@ -382,15 +388,16 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     sources_ = install::Scan(app_);
   }
 
-  // The content rows: the two games, Saints Row 2's DLC (in install::Remove's order).
+  // The content rows: the two games (with their title updates), the DLC (in install::Remove's order).
   enum ContentRow { kRowGame1, kRowGame2, kRowDlc, kRowTextures, kContentRows };
 
   // What waits in install/ for a content row; nullptr: nothing.
   const install::Source* SourceFor(int row) const {
     for (const auto& s : sources_) {
       const bool game = s.kind == install::Kind::kGameImage || s.kind == install::Kind::kGameFolder;
-      if (row == kRowGame1 && game && s.game == 1) return &s;
-      if (row == kRowGame2 && game && s.game == 2) return &s;
+      const bool update = s.kind == install::Kind::kUpdate && !s.installed;
+      if (row == kRowGame1 && (game || update) && s.game == 1) return &s;
+      if (row == kRowGame2 && (game || update) && s.game == 2) return &s;
       if (row == kRowDlc && s.kind == install::Kind::kDlc && !s.installed) return &s;
       if (row == kRowTextures && s.kind == install::Kind::kTexturePack && !s.installed) return &s;
     }
@@ -404,14 +411,14 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   }
   bool RowInstalled(int row) const {
     switch (row) {
-      case kRowGame1: return installed_.game[1];
-      case kRowGame2: return installed_.game[2];
+      case kRowGame1: return installed_.game[1] && installed_.update[1];
+      case kRowGame2: return installed_.game[2] && installed_.update[2];
       case kRowTextures: return installed_.textures > 0;
       default: return installed_.dlc > 0;
     }
   }
-  // The chosen game's disc: what PLAY needs.
-  bool Ready() const { return installed_.game[game_]; }
+  // The chosen game's disc and title update: what PLAY needs.
+  bool Ready() const { return installed_.game[game_] && installed_.update[game_]; }
   // The saves page's rows after BACK UP: the saves and backups to import or restore.
   std::vector<const install::Source*> SaveSources() const {
     std::vector<const install::Source*> out;
@@ -944,12 +951,17 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         // what's missing, and where it goes
         missing_flash_ = std::max(0.0f, missing_flash_ - 0.03f);
         const char* what =
-            g == 1 ? "SAINTS ROW ISN'T INSTALLED\nPut your Saints Row disc image (.iso, any name) or the disc's files in "
-                     "PPSA54107/install/ and open the app again: it installs by itself. The CONTENT page shows what's "
-                     "there."
-                   : "SAINTS ROW 2 ISN'T INSTALLED\nPut your Saints Row 2 disc image (.iso, any name) or the disc's files "
-                     "in PPSA54107/install/ and open the app again: it installs by itself. The CONTENT page shows "
-                     "what's there.";
+            installed_.game[g]
+                ? (g == 1 ? "SAINTS ROW NEEDS TITLE UPDATE 1\nPut Saints Row's Title Update 1 package (TU_...) in "
+                            "PPSA54107/install/ and open the app again: it installs by itself."
+                          : "SAINTS ROW 2 NEEDS TITLE UPDATE 3\nPut Saints Row 2's Title Update 3 package (TU_...) in "
+                            "PPSA54107/install/ and open the app again: it installs by itself.")
+            : g == 1 ? "SAINTS ROW ISN'T INSTALLED\nPut your Saints Row disc image (.iso, any name) or the disc's files, "
+                       "and Title Update 1's package, in PPSA54107/install/ and open the app again: they install by "
+                       "themselves. The CONTENT page shows what's there."
+                     : "SAINTS ROW 2 ISN'T INSTALLED\nPut your Saints Row 2 disc image (.iso, any name) or the disc's "
+                       "files, and Title Update 3's package, in PPSA54107/install/ and open the app again: they "
+                       "install by themselves. The CONTENT page shows what's there.";
         const float pw = 900 * u, th = g_body->CalcTextSizeA(26 * u, FLT_MAX, pw, what).y;
         dl->AddRectFilled(ImVec2(left - 16 * u, y - 12 * u), ImVec2(left + pw + 16 * u, y + th + 12 * u),
                           P(IM_COL32(40, 6, 6, ImU32(200 + 55 * missing_flash_))), 6 * u);
@@ -958,7 +970,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         y += th + 42 * u;
       } else {
         std::string where = "Your saves load with the game.";
-        if (g == 2 && installed_.dlc)
+        if (installed_.dlc)
           where = (installed_.dlc == 1 ? std::string("1 DLC pack") : std::to_string(installed_.dlc) + " DLC packs") +
                   " and your saves load with the game.";
         dl->AddText(g_body, 26 * u, ImVec2(left, y), P(kGrey), where.c_str());
@@ -1026,19 +1038,18 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         installed_.dlc ? "DLC  (" + std::to_string(installed_.dlc) + (installed_.dlc == 1 ? " PACK)" : " PACKS)") : "DLC";
     const std::string textures_name =
         installed_.textures ? "HD TEXTURES  (" + std::to_string(installed_.textures) + ")" : "HD TEXTURES";
-    const std::string names[kContentRows] = {"SAINTS ROW", "SAINTS ROW 2", "SAINTS ROW 2 " + dlc_name, textures_name};
+    const std::string names[kContentRows] = {"SAINTS ROW", "SAINTS ROW 2", dlc_name, textures_name};
     const char* help[kContentRows] = {
-        "Saints Row's disc. Put your disc image (.iso, any name) or a folder of the disc's files in "
-        "PPSA54107/install/: it installs into PPSA54107/game1/ when the app opens, or with X here. No title "
-        "update is needed.",
-        "Saints Row 2's disc. Put your disc image (.iso, any name) or a folder of the disc's files in "
-        "PPSA54107/install/: it installs into PPSA54107/game2/ when the app opens, or with X here. No title "
-        "update is needed.",
-        "Optional: Saints Row 2's DLC (the RadNet Edition's events, the Colossal Mayhem pack, the outfits). Put "
-        "their packages (any names) in PPSA54107/install/: each installs by itself. TRIANGLE removes them all.",
-        "Optional: the PC 4K texture packs - Allagga's Saints Row RE and Warcaco's Saints Row 2 pack, from Nexus "
-        "Mods. Extract the downloads on a PC and put the folders (with their .tpf files) in PPSA54107/install/: "
-        "the textures install by themselves, into PPSA54107/textures/. TRIANGLE removes them all."};
+        "Saints Row's disc and its Title Update 1 (both needed). Put your disc image (.iso, any name) or a "
+        "folder of the disc's files, and the title update's package (TU_...), in PPSA54107/install/: they install "
+        "into PPSA54107/game1/ when the app opens, or with X here.",
+        "Saints Row 2's disc and its Title Update 3 (both needed). Put your disc image (.iso, any name) or a "
+        "folder of the disc's files, and the title update's package (TU_...), in PPSA54107/install/: they install "
+        "into PPSA54107/game2/ when the app opens, or with X here.",
+        "Optional: either game's DLC (Saints Row's Money Shot and clothing packs; Saints Row 2's Ultor Exposed, "
+        "Corporate Warfare and the Unkut pack). Put their packages (any names) in PPSA54107/install/: each "
+        "installs by itself. TRIANGLE removes them all.",
+        "Optional: HD texture packs (none known for these games yet). TRIANGLE removes any installed."};
     for (int r = 0; r < kContentRows; ++r) {
       const bool sel = r == content_row_, in = RowInstalled(r);
       const install::Source* src = SourceFor(r);
@@ -1048,6 +1059,9 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       std::string status = in && !(r == kRowDlc && src) ? "INSTALLED"
                            : src                        ? "READY TO INSTALL"
                                                         : "NOT INSTALLED";
+      // (a disc without the title update the program is built from)
+      if ((r == kRowGame1 || r == kRowGame2) && !src && installed_.game[r + 1] && !installed_.update[r + 1])
+        status = r == kRowGame1 ? "NEEDS TITLE UPDATE 1" : "NEEDS TITLE UPDATE 3";
       if (r == kRowDlc && src) status = std::to_string(DlcWaiting()) + " READY TO INSTALL";
       if (r == kRowTextures && src)
         status = std::to_string(Waiting(install::Kind::kTexturePack)) + " PACKAGES READY TO INSTALL";

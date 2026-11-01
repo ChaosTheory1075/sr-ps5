@@ -26,6 +26,8 @@ using GuestFn = void (*)(PPCContext&, uint8_t*);
 // The games' Lua 5.1 API, found through its standalone debug console (ldblib's db_debug: the
 // "=(debug command)" chunk name): luaL_loadbuffer(L, buffer, size, name),
 // lua_pcall(L, nargs, nresults, errfunc), lua_tolstring(L, index, size_t*), lua_settop(L, index).
+// (Prototype's addresses: off until Saints Row's own are found, SR_GAME_HOOKS in CMakeLists.txt)
+#if SR_GAME_HOOKS
 #if SR_GAME == 1
 const GuestFn kLoadBuffer = sub_82ACB660, kPcall = __imp__sub_829F96B0, kToLString = sub_829F8910,
               kSetTop = sub_829F8230;
@@ -33,6 +35,7 @@ const GuestFn kLoadBuffer = sub_82ACB660, kPcall = __imp__sub_829F96B0, kToLStri
 const GuestFn kLoadBuffer = sub_82C261B8, kPcall = __imp__sub_82BE8610, kToLString = sub_82BE7820,
               kSetTop = sub_8219AB18;
 #endif
+#endif  // SR_GAME_HOOKS
 
 constexpr uint32_t kBufferSize = 64 * 1024;  // (the chunk name, then the chunk)
 constexpr char kChunkName[] = "=ReInstated";
@@ -83,6 +86,7 @@ std::string Run(PPCContext& ctx, uint8_t* base, uint32_t L, const std::string& c
     fn(ctx, base);
     return ctx.r3.u32;
   };
+#if SR_GAME_HOOKS
   int status = int32_t(call(kLoadBuffer, text, chunk.size(), g_buffer));
   if (status == 0) status = int32_t(call(kPcall, 0, 1, 0));
   // (one value on top either way: the chunk's result or the error message)
@@ -95,6 +99,11 @@ std::string Run(PPCContext& ctx, uint8_t* base, uint32_t L, const std::string& c
   call(kSetTop, uint64_t(int64_t(-2)), 0, 0);
   ctx = saved;
   return status ? "error: " + out : out;
+#else
+  (void)call;
+  (void)text;
+  return "error: no Lua hooks yet";
+#endif
 }
 
 void Report(const std::string& out) {
@@ -179,6 +188,8 @@ void LuaSetTick(std::function<std::string()> make, uint32_t period_ms) {
 }  // namespace srps5
 
 // The game's lua_pcall: our chunks first, at this safe point, then the game's call.
+// (Prototype's addresses: off until Saints Row's own are found, SR_GAME_HOOKS in CMakeLists.txt)
+#if SR_GAME_HOOKS
 #if SR_GAME == 1
 extern "C" void sub_829F96B0(PPCContext& __restrict ctx, uint8_t* base) {
   srps5::OnPcall(ctx, base);
@@ -190,5 +201,6 @@ extern "C" void sub_82BE8610(PPCContext& __restrict ctx, uint8_t* base) {
   __imp__sub_82BE8610(ctx, base);
 }
 #endif
+#endif  // SR_GAME_HOOKS
 
 #endif  // REX_PLATFORM_PS5
