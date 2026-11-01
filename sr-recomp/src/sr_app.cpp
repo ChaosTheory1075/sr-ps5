@@ -292,3 +292,17 @@ extern "C" void sub_82763BF8(PPCContext& __restrict ctx, uint8_t* base) {
   __imp__sub_82763BF8(ctx, base);
 }
 #endif
+
+#if REX_PLATFORM_PS5 && SR_GAME == 1
+// Its network object (made at start-up by 8236B270: 827050A0) is deleted at once when the network
+// doesn't come up (offline, always here); the destructor's shutdown (82704840: disconnect, pump the
+// last packets) ran over the parts never set up and read through a null pointer (+0xC) on the way
+// to the main menu. Nothing was connected: nothing to shut down.
+extern "C" void sub_82704840(PPCContext& __restrict ctx, uint8_t* base) {
+  (void)ctx;
+  (void)base;
+  static bool logged = false;
+  if (!logged) REXLOG_INFO("Saints Row: offline: the network object's shutdown skipped");
+  logged = true;
+}
+#endif

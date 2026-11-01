@@ -82,3 +82,21 @@ large_function_threshold = 1048576
 "0x82B265D0" = {}
 "0x82B265E8" = {}
 "0x82B26660" = {}
+
+
+# Two-instruction thunks (set one register, b) the analyzer merged into the thunk before them: ones
+# the data points at (vtables, handler tables) and the rest of their runs (Extras/tmp/thunks2.sh).
+# Saints Row 2 called 823C88B0 through a vtable and stopped: "call to unregistered function".
+"0x8225FE68" = {}
+"0x8225FE70" = {}
+"0x8225FE78" = {}
+"0x8225FE80" = {}
+"0x8225FE88" = {}
+"0x8225FEFC" = {}
+"0x8225FF04" = {}
+"0x8225FF0C" = {}
+"0x8225FF14" = {}
+"0x8225FF1C" = {}
+"0x8225FF24" = {}
+"0x8225FF2C" = {}
+"0x823C88B0" = {}
