@@ -130,6 +130,9 @@ std::vector<LuaResult> Run(PPCContext& ctx, uint8_t* base, uint32_t L, const std
     call(kRawGet, uint64_t(kGlobals));
     const uint32_t func = get32(L + 8) - kTValue;
     if (get32(func) != kFunction) {
+      static std::atomic<int> missing{0};
+      if (missing.fetch_add(1) < 5)
+        REXLOG_INFO("SAINTS ROW: ReInstated: Lua state {:08X} has no {} (type {})", L, c.function, get32(func));
       put32(L + 8, func);  // (popped)
       if (i == 0) break;   // (not there yet: the batch is for later)
       results.push_back({});
@@ -186,6 +189,8 @@ void OnPcall(PPCContext& ctx, uint8_t* base) {
   if (SDL_GetTicks() - first_call_ms < 45000) return;
   std::unique_lock run(g_run, std::try_to_lock);
   if (!run.owns_lock()) return;
+  static std::atomic<bool> announced{false};
+  if (!announced.exchange(true)) REXLOG_INFO("SAINTS ROW: ReInstated: Lua bridge ready (state {:08X})", ctx.r3.u32);
   Pending job;
   std::function<std::vector<LuaCall>()> make;
   std::function<void(const std::vector<LuaResult>&)> tick_done;
