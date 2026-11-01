@@ -47,7 +47,7 @@ def read(path):
             files.append((cstr(names + no), struct.unpack_from(">I", d, index + i * 28 + 8)[0], size, comp))
     blob = None
     if flags & 2:  # condensed: one stream
-        blob = zlib.decompress(d[data:data + csize]) if flags & 1 else d[data:data + usize]
+        blob = zlib.decompressobj().decompress(d[data:data + csize]) if flags & 1 else d[data:data + usize]
     # (compressed, not condensed: each file's stream follows the last, aligned to 2048 bytes; the
     # index's offsets are the uncompressed ones)
     where = {}

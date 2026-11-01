@@ -13,6 +13,9 @@
 
 #include <rex/cvar.h>
 #include <rex/filesystem/devices/host_path_file.h>
+#include <rex/graphics/pipeline/texture/cache.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xmemory.h>
 #include <rex/logging.h>
 
 REXCVAR_DEFINE_BOOL(sr_ps_prompts, true, "SAINTS ROW",
@@ -60,6 +63,67 @@ void OnFileRead(const std::string& name, size_t offset, uint8_t* data, size_t si
   }
 }
 
+// ---- Saints Row: its button pictures replaced as the GPU loads them ----
+//
+// prompts1.bin ("SRTX": tools/prompts/sr1_buttons.py): {FNV-1a 64 of an Xbox 360 button texture's
+// first `size` bytes, size, the DualSense picture's offset}. A texture about to be loaded whose
+// base level has that size and fingerprint gets the DualSense's written over it in guest memory.
+struct TexturePatch {
+  uint64_t hash;
+  uint32_t size;
+  const uint8_t* data;
+};
+std::vector<TexturePatch> g_textures;  // (set before the hook is, then only read)
+
+uint64_t Fnv1a64(const uint8_t* p, size_t n) {
+  uint64_t h = 0xCBF29CE484222325ull;
+  for (size_t i = 0; i < n; ++i) h = (h ^ p[i]) * 0x100000001B3ull;
+  return h;
+}
+
+void OnTextureLoad(uint32_t physical, uint32_t size, uint32_t format) {
+  (void)format;
+  if (!REXCVAR_GET(sr_ps_prompts)) return;
+  bool sized = false;
+  for (const TexturePatch& t : g_textures) sized |= t.size == size;
+  if (!sized) return;
+  auto* kernel = REX_KERNEL_STATE();
+  if (!kernel || !kernel->memory()) return;
+  uint8_t* guest = kernel->memory()->TranslatePhysical<uint8_t*>(physical);
+  if (!guest) return;
+  const uint64_t h = Fnv1a64(guest, size);
+  for (const TexturePatch& t : g_textures) {
+    if (t.size != size || t.hash != h) continue;
+    std::memcpy(guest, t.data, size);
+    const uint32_t count = g_applied.fetch_add(1) + 1;
+    if (count <= 40) REXLOG_INFO("SAINTS ROW: ReInstated: PlayStation button picture at {:08X} ({} bytes), {} so far",
+                                 physical, size, count);
+    return;
+  }
+}
+
+bool InstallTexturePrompts(const uint8_t* blob, size_t blob_size) {
+  uint32_t count = 0;
+  if (blob_size < 8 || std::memcmp(blob, "SRTX", 4) != 0) return false;
+  std::memcpy(&count, blob + 4, 4);
+  if (8 + size_t(count) * 16 > blob_size) return false;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t* e = blob + 8 + i * 16;
+    TexturePatch t{};
+    uint32_t at;
+    std::memcpy(&t.hash, e, 8);
+    std::memcpy(&t.size, e + 8, 4);
+    std::memcpy(&at, e + 12, 4);
+    if (size_t(at) + t.size > blob_size) continue;
+    t.data = blob + at;
+    g_textures.push_back(t);
+  }
+  rex::graphics::g_sr_texture_load_hook.store(&OnTextureLoad);
+  REXLOG_INFO("SAINTS ROW: ReInstated: PlayStation button pictures, {} fingerprints ({})", g_textures.size(),
+              REXCVAR_GET(sr_ps_prompts) ? "on" : "off: the Xbox 360's");
+  return true;
+}
+
 }  // namespace
 
 void InstallPrompts() {
@@ -67,10 +131,12 @@ void InstallPrompts() {
   if (installed.exchange(true)) return;
   const uint8_t* blob = srps5_prompts;
   const size_t blob_size = size_t(srps5_prompts_end - srps5_prompts);
+  if (InstallTexturePrompts(blob, blob_size)) return;
   uint32_t count = 0;
   if (blob_size < 8 || std::memcmp(blob, "PRPF", 4) != 0 ||
       (std::memcpy(&count, blob + 4, 4), 8 + size_t(count) * 48 > blob_size)) {
-    REXLOG_WARN("SAINTS ROW: ReInstated: no PlayStation button prompts in this build (Xbox 360's shown)");
+    // (Saints Row 2 needs none: its own PS3 pictures, through get_platform - sr_app.cpp)
+    if (SR_GAME == 1) REXLOG_WARN("SAINTS ROW: ReInstated: no PlayStation button prompts in this build (Xbox 360's shown)");
     return;
   }
   for (uint32_t i = 0; i < count; ++i) {
