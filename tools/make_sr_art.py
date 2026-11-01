@@ -5,6 +5,7 @@
 
 - hub/background1.jpg, hub/background2.jpg: the menu's backgrounds for Saints Row and Saints Row 2
 - hub/logo1.png, hub/logo2.png: "Saints Row" and "Saints Row 2" in chrome, like the games' logos
+- hub/title.png: "Saints Row: ReInstated" on one line, the menu's header
 - sce_sys/icon0.png (512x512) and pic0.dds / pic1.dds (3840x2160 BC7): the home screen's, with
   "Saints Row: ReInstated" on them
 
@@ -75,6 +76,18 @@ def title_block(font_path, width):
     return out
 
 
+def title_line(font_path, height):
+    """Chrome "Saints Row:" and a purple "ReInstated" on one line, `height` pixels tall (the menu's
+    header)."""
+    a = logo(font_path, "Saints Row:", 300)
+    b = logo(font_path, "ReInstated", 300, PURPLE)
+    gap = 40
+    out = Image.new("RGBA", (a.width + gap + b.width, max(a.height, b.height)), (0, 0, 0, 0))
+    out.alpha_composite(a, (0, out.height - a.height))
+    out.alpha_composite(b, (a.width + gap, out.height - b.height))
+    return out.resize((round(out.width * height / out.height), height), Image.LANCZOS)
+
+
 def cover(img, w, h, focus=0.5, vfocus=0.5):
     s = max(w / img.width, h / img.height)
     img = img.resize((round(img.width * s), round(img.height * s)), Image.LANCZOS)
@@ -100,6 +113,7 @@ def main():
     cover(b2, 1920, 1080).save(os.path.join(hub, "background2.jpg"), quality=92)
     logo(font_path, "Saints Row", 300).save(os.path.join(hub, "logo1.png"))
     logo(font_path, "Saints Row 2", 300).save(os.path.join(hub, "logo2.png"))
+    title_line(font_path, 96).save(os.path.join(hub, "title.png"))
 
     # the home screen: the Saints Row crew at the left, Saints Row 2's boss at the right (the logo-free
     # picture), the name over the dark middle (the crew picture's logo is off the crop)

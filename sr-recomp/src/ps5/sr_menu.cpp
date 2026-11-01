@@ -343,6 +343,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         if (!background_[g]) background_[g] = Load(hub / ("background" + n + ext));
       logo_[g] = Load(hub / ("logo" + n + ".png"));
     }
+    title_ = Load(hub / "title.png");
     game_ = settings_.game;
     shown_game_ = float(game_);
     std::error_code ec;
@@ -418,7 +419,8 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   }
 
   // The content rows: the two games (with their title updates), the DLC (in install::Remove's order).
-  enum ContentRow { kRowGame1, kRowGame2, kRowDlc, kRowTextures, kContentRows };
+  // (no HD TEXTURES row: there are no texture packs for these games)
+  enum ContentRow { kRowGame1, kRowGame2, kRowDlc, kContentRows };
 
   // What waits in install/ for a content row; nullptr: nothing.
   const install::Source* SourceFor(int row) const {
@@ -428,7 +430,6 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       if (row == kRowGame1 && (game || update) && s.game == 1) return &s;
       if (row == kRowGame2 && (game || update) && s.game == 2) return &s;
       if (row == kRowDlc && s.kind == install::Kind::kDlc && !s.installed) return &s;
-      if (row == kRowTextures && s.kind == install::Kind::kTexturePack && !s.installed) return &s;
     }
     return nullptr;
   }
@@ -442,7 +443,6 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     switch (row) {
       case kRowGame1: return installed_.game[1] && installed_.update[1];
       case kRowGame2: return installed_.game[2] && installed_.update[2];
-      case kRowTextures: return installed_.textures > 0;
       default: return installed_.dlc > 0;
     }
   }
@@ -947,9 +947,15 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     }
     button(x - 22 * u, "R1");
     // the project's name at the right
-    const char* name = "SAINTS ROW  REINSTATED";
-    const float nw = Width(g_body, 20 * u, name);
-    dl->AddText(g_body, 20 * u, ImVec2(size.x - 140 * u - nw, y + 12 * u), A(kDim), name);
+    if (title_) {
+      const float th = 46 * u, tw = title_.w * th / title_.h;
+      dl->AddImage(title_.id, ImVec2(size.x - 140 * u - tw, y - 2 * u), ImVec2(size.x - 140 * u, y - 2 * u + th),
+                   ImVec2(0, 0), ImVec2(1, 1), A(kWhite));
+    } else {
+      const char* name = "SAINTS ROW  REINSTATED";
+      const float nw = Width(g_body, 20 * u, name);
+      dl->AddText(g_body, 20 * u, ImVec2(size.x - 140 * u - nw, y + 12 * u), A(kDim), name);
+    }
     dl->AddRectFilled(ImVec2(tab_x_, y + 56 * u), ImVec2(tab_x_ + tab_w_, y + 61 * u), A(kRed));
     dl->AddRectFilled(ImVec2(140 * u, y + 61 * u), ImVec2(size.x - 140 * u, y + 62 * u), A(IM_COL32(255, 255, 255, 40)));
   }
@@ -968,7 +974,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       case kTrophies: hints = "UP DOWN  MOVE      LEFT RIGHT  PAGE UP / DOWN      TRIANGLE  OTHER GAME      O  BACK"; break;
       default: hints = "O  BACK      L1 R1  PAGES"; break;
     }
-    dl->AddText(g_body, 22 * u, ImVec2(size.x - 140 * u - Width(g_body, 22 * u, hints), y), A(kGrey), hints.c_str());
+    dl->AddText(g_body, 22 * u, ImVec2(size.x - 140 * u - Width(g_body, 22 * u, hints), y), A(kRed), hints.c_str());
   }
 
   void DrawHome(ImDrawList* dl, const ImVec2& size) {
@@ -1095,9 +1101,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     float y = 200 * u;
     const std::string dlc_name =
         installed_.dlc ? "DLC  (" + std::to_string(installed_.dlc) + (installed_.dlc == 1 ? " PACK)" : " PACKS)") : "DLC";
-    const std::string textures_name =
-        installed_.textures ? "HD TEXTURES  (" + std::to_string(installed_.textures) + ")" : "HD TEXTURES";
-    const std::string names[kContentRows] = {"SAINTS ROW", "SAINTS ROW 2", dlc_name, textures_name};
+    const std::string names[kContentRows] = {"SAINTS ROW", "SAINTS ROW 2", dlc_name};
     const char* help[kContentRows] = {
         "Saints Row's disc and its Title Update 1 (both needed). Put your disc image (.iso, any name) or a "
         "folder of the disc's files, and the title update's package (TU_...), in PPSA54107/install/: they install "
@@ -1107,8 +1111,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         "into PPSA54107/game2/ when the app opens, or with X here.",
         "Optional: either game's DLC (Saints Row's Money Shot and clothing packs; Saints Row 2's Ultor Exposed, "
         "Corporate Warfare and the Unkut pack). Put their packages (any names) in PPSA54107/install/: each "
-        "installs by itself. TRIANGLE removes them all.",
-        "Optional: HD texture packs (none known for these games yet). TRIANGLE removes any installed."};
+        "installs by itself. TRIANGLE removes them all."};
     for (int r = 0; r < kContentRows; ++r) {
       const bool sel = r == content_row_, in = RowInstalled(r);
       const install::Source* src = SourceFor(r);
@@ -1122,8 +1125,6 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       if ((r == kRowGame1 || r == kRowGame2) && !src && installed_.game[r + 1] && !installed_.update[r + 1])
         status = r == kRowGame1 ? "NEEDS TITLE UPDATE 1" : "NEEDS TITLE UPDATE 3";
       if (r == kRowDlc && src) status = std::to_string(DlcWaiting()) + " READY TO INSTALL";
-      if (r == kRowTextures && src)
-        status = std::to_string(Waiting(install::Kind::kTexturePack)) + " PACKAGES READY TO INSTALL";
       if (sel && Confirming(100 + r)) status = "PRESS TRIANGLE AGAIN TO UNINSTALL";
       dl->AddText(g_body, 28 * u, ImVec2(left + 430 * u, y + 8 * u),
                   P(in ? kWhite : src ? kWhite : kGrey),
@@ -1507,7 +1508,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   std::function<void(MenuChoice)> play_;
   Settings settings_;
   Pad pad_;
-  Image background_[3], logo_[3];
+  Image background_[3], logo_[3], title_;  // (title_: hub/title.png, the header's logo)
   int game_ = 1, trophy_game_ = 1;
   float shown_game_ = 1;
   std::string start_error_;
