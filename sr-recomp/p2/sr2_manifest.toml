@@ -1,0 +1,10 @@
+[project]
+name = "sr2"
+sdk_version = "0.9.0"
+
+[entrypoint]
+# Saints Row 2 (545107FC): the disc's default.xex with Title Update 3's default.xexp beside it; the loader
+# applies the patch, so the code generated is the updated game's.
+file_path = "assets/default.xex"
+out_directory_path = "generated"
+includes = ["sr2_config.toml"]
