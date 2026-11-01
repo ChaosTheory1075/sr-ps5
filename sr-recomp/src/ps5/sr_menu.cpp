@@ -165,9 +165,8 @@ struct Settings {
     const char* name;
     bool p1;  // (on Saints Row's disc too: English, French, Spanish, Italian)
   };
-  static constexpr Language kLanguages[] = {{1, "ENGLISH", true},  {4, "FRENCH", true},   {3, "GERMAN", false},
-                                            {6, "ITALIAN", true},  {5, "SPANISH", true},  {11, "POLISH", false},
-                                            {12, "RUSSIAN", false}};
+  static constexpr Language kLanguages[] = {{1, "ENGLISH", true}, {4, "FRENCH", true}, {3, "GERMAN", true},
+                                            {6, "ITALIAN", true}, {5, "SPANISH", true}};
   static int LanguageIndex(int id) {
     for (int i = 0; i < int(std::size(kLanguages)); ++i)
       if (kLanguages[i].id == id) return i;
@@ -298,7 +297,7 @@ const char* const kPageNames[kPages] = {"HOME", "CONTENT", "SAVES", "SETTINGS", 
 // The settings page's rows, in its order (a new option: a row here, its line
 // in SettingsLines and its change in ChangeSetting).
 enum SettingsRow {
-  kFrameRate, kAntiAliasing, kFiltering, kLane, kFps, kPrompts, kDualSense, kLanguage, kSkipIntro, kRadnet, kMusic, kSettingsRows
+  kFrameRate, kAntiAliasing, kFiltering, kLane, kFps, kPrompts, kDualSense, kLanguage, kSkipIntro, kMusic, kSettingsRows
 };
 
 class MenuDialog final : public rex::ui::ImGuiDialog {
@@ -606,17 +605,11 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
                          "the cheats.)"};
     lines[kLanguage] = {"GAME", "LANGUAGE", Settings::kLanguages[Settings::LanguageIndex(settings_.language)].name,
                         true,
-                        "The language of the games' text, menus and subtitles. Saints Row 2: English, French, German, "
-                        "Italian, Spanish, Polish or Russian. Saints Row's disc "
-                        "has English, French, Italian and Spanish: it stays in English for the others."};
+                        "The language of the games' text, menus and subtitles, as the Xbox 360's own language "
+                        "setting chooses it: the discs have English, French, German, Italian and Spanish."};
     lines[kSkipIntro] = {"GAME", "SKIP INTRO", settings_.skip_intro ? "ON" : "OFF", true,
-                         "Saints Row starts straight at its title screen, without the Activision and Radical logo "
-                         "movie."};
-    lines[kRadnet] = {"GAME", "RADNET EVENTS", settings_.radnet ? "UNLOCKED" : "LOCKED", true,
-                      "Saints Row 2's Radnet: the weekly challenges, videos and rewards its online service gave out "
-                      "after launch, long switched off. Unlocked, every week's events are there offline (with the "
-                      "RADNET Access Pack installed, as it came with the game), each opening as the story reaches "
-                      "it, as on Radnet."};
+                         "The games start straight at their title screens, without the THQ and Volition logo "
+                         "movies."};
     lines[kMusic] = {"AUDIO", "MENU MUSIC", music, true, "How loud this menu's song is.", true};
     return lines;
   }
@@ -655,9 +648,6 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       }
       case kSkipIntro:
         if (flip) settings_.skip_intro = !settings_.skip_intro;
-        break;
-      case kRadnet:
-        if (flip) settings_.radnet = !settings_.radnet;
         break;
       case kMusic:
         settings_.music = std::clamp(settings_.music + step * 10, 0, 100);
