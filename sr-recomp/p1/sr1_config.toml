@@ -19,3 +19,47 @@ data_region_threshold = 16
 large_function_threshold = 1048576
 
 [functions]
+
+# Unresolved tail-call targets (b from another function).
+"0x8261C070" = {}
+
+
+# Entries the analyzer merged into the function before them (each follows a tail call, blr or
+# bctr; referenced from data or built with lis/addi): tools/find_missed_entries2.py, checked with
+# Extras/tmp/peek.py. Not the __except blocks (bl to the unwinder, then r31: the frame of the
+# function they belong to).
+"0x8222F420" = {}
+"0x8222F428" = {}
+"0x8222F4D0" = {}
+"0x82288080" = {}
+"0x82288090" = {}
+"0x822B2980" = {}
+"0x8234C5E0" = {}
+"0x824145A0" = {}
+"0x82500800" = {}
+"0x82600CB0" = {}
+"0x8260A350" = {}
+"0x82616860" = {}
+"0x8261A4D0" = {}
+"0x8261A4D8" = {}
+"0x8261EA88" = {}
+"0x8261EAB8" = {}
+"0x8261EAC0" = {}
+"0x8261EAE8" = {}
+"0x8261EB00" = {}
+"0x8261EB58" = {}
+"0x8261EBA8" = {}
+"0x8261EBB8" = {}
+"0x8261FD40" = {}
+"0x8261FD60" = {}
+"0x8261FD80" = {}
+"0x8261FD90" = {}
+"0x826AE460" = {}
+"0x826AEAA8" = {}
+"0x826CEEB8" = {}
+"0x826CEED0" = {}
+"0x826CEEE8" = {}
+"0x826CEF00" = {}
+"0x826CEF18" = {}
+"0x826DD6B8" = {}
+"0x82726F38" = {}
