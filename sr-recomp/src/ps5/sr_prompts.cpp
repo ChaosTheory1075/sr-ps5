@@ -81,25 +81,25 @@ uint64_t Fnv1a64(const uint8_t* p, size_t n) {
   return h;
 }
 
-void OnTextureLoad(uint32_t physical, uint32_t size, uint32_t format) {
-  (void)format;
-  if (!REXCVAR_GET(sr_ps_prompts)) return;
-  // (diagnostics: the small textures the GPU loads, with their fingerprints, the first 60)
+bool OnTextureLoad(uint32_t physical, uint32_t size, uint32_t format) {
+  if (!REXCVAR_GET(sr_ps_prompts)) return false;
+  // (diagnostics: the small DXT5 textures (xenos k_DXT4_5, 20) the GPU loads, with their
+  // fingerprints, the first 300)
   static std::atomic<int> seen{0};
-  if (size <= 0x4000 && seen.load() < 60) {
+  if (format == 20 && size <= 0x4000 && seen.load() < 300) {
     if (auto* k = REX_KERNEL_STATE(); k && k->memory()) {
-      if (const uint8_t* g = k->memory()->TranslatePhysical<const uint8_t*>(physical); g && seen.fetch_add(1) < 60)
+      if (const uint8_t* g = k->memory()->TranslatePhysical<const uint8_t*>(physical); g && seen.fetch_add(1) < 300)
         REXLOG_INFO("SAINTS ROW: ReInstated: texture {:08X} format {} size {:X} fnv {:016X} first {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
                     physical, format, size, Fnv1a64(g, size), g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
     }
   }
   bool sized = false;
   for (const TexturePatch& t : g_textures) sized |= t.size == size;
-  if (!sized) return;
+  if (!sized) return false;
   auto* kernel = REX_KERNEL_STATE();
-  if (!kernel || !kernel->memory()) return;
+  if (!kernel || !kernel->memory()) return false;
   uint8_t* guest = kernel->memory()->TranslatePhysical<uint8_t*>(physical);
-  if (!guest) return;
+  if (!guest) return false;
   const uint64_t h = Fnv1a64(guest, size);
   for (const TexturePatch& t : g_textures) {
     if (t.size != size || t.hash != h) continue;
@@ -107,8 +107,9 @@ void OnTextureLoad(uint32_t physical, uint32_t size, uint32_t format) {
     const uint32_t count = g_applied.fetch_add(1) + 1;
     if (count <= 40) REXLOG_INFO("SAINTS ROW: ReInstated: PlayStation button picture at {:08X} ({} bytes), {} so far",
                                  physical, size, count);
-    return;
+    return true;
   }
+  return false;
 }
 
 bool InstallTexturePrompts(const uint8_t* blob, size_t blob_size) {

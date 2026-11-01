@@ -2151,23 +2151,179 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "  std::array<uint8_t, 3> color{};\n"
          "  float sprint = 0;\n"
          "};\n")
+    # ---- From Max Payne 3 RePrescribed (its ci/patch_framework.py), missing here ----
+    vcp = sdk / "src" / "graphics" / "vulkan" / "command_processor.cpp"
+    # Occlusion queries: when the 8192 host queries wrapped, AcquireOcclusionQueryIndex waited
+    # for every pending one (the GPU drained) - every few frames in scenes full of light flares,
+    # up to a quarter of the GPU thread's time in the chapter 1 log. Only a pending query on the
+    # index being reused has to be waited for: the queue is in allocation order, so that is its
+    # front, and it is 8192 queries old (long done) in practice.
+    edit(vcp,
+         "  if (occlusion_query_cursor_ >= kMaxOcclusionQueries) {\n"
+         "    // Results still in flight must not be overwritten by the reused indices.\n"
+         "    CompleteOcclusionQueries(true);\n"
+         "    occlusion_query_cursor_ = 0;\n"
+         "  }\n"
+         "  host_index_out = occlusion_query_cursor_++;\n",
+         "  if (occlusion_query_cursor_ >= kMaxOcclusionQueries) {\n"
+         "    occlusion_query_cursor_ = 0;\n"
+         "  }\n"
+         "  // [sr] A result still in flight must not be overwritten by the reused index: only the\n"
+         "  // oldest pending query can hold it (allocation order), so wait for that one alone.\n"
+         "  while (!pending_occlusion_queries_.empty() &&\n"
+         "         pending_occlusion_queries_.front().host_index == occlusion_query_cursor_ && !device_lost_) {\n"
+         "    const uint64_t submission = pending_occlusion_queries_.front().submission;\n"
+         "    if (submission_completed_ < submission) {\n"
+         "      CheckSubmissionFenceAndDeviceLoss(submission);\n"
+         "      if (submission_completed_ < submission) break;\n"
+         "    }\n"
+         "    CompleteOcclusionQueries(false);\n"
+         "  }\n"
+         "  host_index_out = occlusion_query_cursor_++;\n")
+    # Alpha to coverage on the EDRAM path (fragment shader interlock) did nothing on the PS5. The
+    # GPU supports demote-to-helper, and on that path the coverage it computed (in its own branch,
+    # never merged out of it) wasn't merged into the pixel's sample mask, only on the other path:
+    # every alpha-to-coverage draw came out fully covered. The grass around Max fades out by
+    # alpha to coverage (its cards' alpha down to a quarter within a metre of him): drawn solid,
+    # the cards turned into big grass-textured triangles across the screen, worst near the camera
+    # (Chapter V; reported on 1.0.3, there since the EDRAM path). As Xenia canary does it now:
+    # the coverage merged out of its branch, and into the mask on both paths.
+    srb = sdk / "src" / "graphics" / "pipeline" / "shader" / "spirv_translator_rb.cpp"
+    edit(srb,
+         "      SpirvBuilder::IfBuilder if_alpha_to_coverage_enabled(\n"
+         "          builder_->createBinOp(spv::OpINotEqual, type_bool_, alpha_to_mask, const_uint_0_),\n"
+         "          spv::SelectionControlDontFlattenMask, *builder_);\n",
+         "      // [sr] the mask without alpha to coverage, for the merge after its branch\n"
+         "      const spv::Id fsi_sample_mask_before_alpha_to_coverage = fsi_sample_mask_in_rt_0_alpha_tests;\n"
+         "      SpirvBuilder::IfBuilder if_alpha_to_coverage_enabled(\n"
+         "          builder_->createBinOp(spv::OpINotEqual, type_bool_, alpha_to_mask, const_uint_0_),\n"
+         "          spv::SelectionControlDontFlattenMask, *builder_);\n")
+    edit(srb,
+         "      if_alpha_to_coverage_enabled.makeEndIf();\n"
+         "    }\n",
+         "      if_alpha_to_coverage_enabled.makeEndIf();\n"
+         "      if (edram_fragment_shader_interlock_) {\n"
+         "        // [sr] out of the branch it was computed in\n"
+         "        fsi_sample_mask_in_rt_0_alpha_tests = if_alpha_to_coverage_enabled.createMergePhi(\n"
+         "            fsi_sample_mask_in_rt_0_alpha_tests, fsi_sample_mask_before_alpha_to_coverage);\n"
+         "      }\n"
+         "    }\n")
+    edit(srb,
+         "      if (!features_.demote_to_helper_invocation) {\n"
+         "        // The tests might have modified the sample mask via\n"
+         "        // fsi_sample_mask_in_rt_0_alpha_tests.\n",
+         "      {  // [sr] with demote too: alpha to coverage changes the mask either way\n"
+         "        // The tests might have modified the sample mask via\n"
+         "        // fsi_sample_mask_in_rt_0_alpha_tests.\n")
+    # [sr] A vertex buffer bound at the address and size it had last time was never requested from
+    # the shared memory again (vertex_buffer_states_ outlived the frame), so the GPU kept its old copy
+    # after the game rewrote it: the grass that bends around Max (rebuilt each frame in buffers the
+    # game reuses) drew another frame's vertices - triangles stretched across the screen (Chapter V,
+    # reported on 1.0.3). Each frame they're requested once again, as in Xenia.
+    edit(vcp,
+         "    shared_memory_->CheckStalePages(uint32_t(REXCVAR_GET(gpu_stale_check_pages_per_frame)));\n"
+         "  }\n"
+         "  vertex_buffers_in_sync_[0] = 0;\n"
+         "  vertex_buffers_in_sync_[1] = 0;\n",
+         "    shared_memory_->CheckStalePages(uint32_t(REXCVAR_GET(gpu_stale_check_pages_per_frame)));\n"
+         "  }\n"
+         "  InvalidateAllVertexBufferResidency();  // [sr] (the states too: requested again each frame)\n")
+    # [sr] Occlusion queries on the EDRAM path (fragment shader interlock): the depth / stencil
+    # test is done in the shader, and a pixel failing it only skipped its colour writes - the host
+    # query still counted it, as no hardware test had rejected it. Saints Row 2 hides its lights'
+    # glows with queries: every glow counted as visible and drew through walls and people. Now a
+    # pixel whose samples all failed is demoted to a helper once the interlock has ended, which a
+    # query doesn't count (with demote-to-helper, as the PS5 has).
+    sth = sdk / "include" / "rex" / "graphics" / "pipeline" / "shader" / "spirv_translator.h"
+    edit(sth,
+         "  spv::Id main_fsi_sample_mask_;\n",
+         "  spv::Id main_fsi_sample_mask_;\n"
+         "  // [sr] the sample mask after the depth / stencil test, for occlusion queries\n"
+         "  spv::Id var_sr_fsi_depth_mask_ = spv::NoResult;\n")
+    stc = sdk / "src" / "graphics" / "pipeline" / "shader" / "spirv_translator.cpp"
+    edit(stc,
+         "  var_main_kill_pixel_ = spv::NoResult;\n",
+         "  var_main_kill_pixel_ = spv::NoResult;\n"
+         "  var_sr_fsi_depth_mask_ = spv::NoResult;  // [sr]\n")
+    edit(stc,
+         "    builder_->createNoResultOp(spv::OpBeginInvocationInterlockEXT);\n"
+         "    FSI_DepthStencilTest(msaa_samples, false);\n",
+         "    builder_->createNoResultOp(spv::OpBeginInvocationInterlockEXT);\n"
+         "    FSI_DepthStencilTest(msaa_samples, false);\n"
+         "    if (features_.demote_to_helper_invocation) {  // [sr] (for occlusion queries)\n"
+         "      var_sr_fsi_depth_mask_ = builder_->createVariable(spv::NoPrecision, spv::StorageClassFunction,\n"
+         "                                                        type_uint_, \"xe_var_sr_fsi_depth_mask\",\n"
+         "                                                        builder_->makeUintConstant(UINT32_MAX));\n"
+         "      builder_->createStore(main_fsi_sample_mask_, var_sr_fsi_depth_mask_);\n"
+         "    }\n")
+    edit(srb,
+         "  if (edram_fragment_shader_interlock_ && !FSI_IsDepthStencilEarly()) {\n"
+         "    if (msaa_samples == spv::NoResult) {\n"
+         "      msaa_samples = LoadMsaaSamplesFromFlags();\n"
+         "    }\n",
+         "  if (edram_fragment_shader_interlock_ && !FSI_IsDepthStencilEarly() &&\n"
+         "      features_.demote_to_helper_invocation) {  // [sr] (for occlusion queries)\n"
+         "    var_sr_fsi_depth_mask_ = builder_->createVariable(spv::NoPrecision, spv::StorageClassFunction,\n"
+         "                                                      type_uint_, \"xe_var_sr_fsi_depth_mask\",\n"
+         "                                                      builder_->makeUintConstant(UINT32_MAX));\n"
+         "  }\n"
+         "  if (edram_fragment_shader_interlock_ && !FSI_IsDepthStencilEarly()) {\n"
+         "    if (msaa_samples == spv::NoResult) {\n"
+         "      msaa_samples = LoadMsaaSamplesFromFlags();\n"
+         "    }\n")
+    edit(srb,
+         "      FSI_DepthStencilTest(msaa_samples,\n"
+         "                           fsi_pixel_potentially_killed || (color_targets_written & 0b1));\n",
+         "      FSI_DepthStencilTest(msaa_samples,\n"
+         "                           fsi_pixel_potentially_killed || (color_targets_written & 0b1));\n"
+         "      if (var_sr_fsi_depth_mask_ != spv::NoResult) {  // [sr]\n"
+         "        builder_->createStore(main_fsi_sample_mask_, var_sr_fsi_depth_mask_);\n"
+         "      }\n")
+    edit(srb,
+         "    builder_->createNoResultOp(spv::OpEndInvocationInterlockEXT);\n"
+         "  }\n"
+         "}\n",
+         "    builder_->createNoResultOp(spv::OpEndInvocationInterlockEXT);\n"
+         "    if (var_sr_fsi_depth_mask_ != spv::NoResult) {\n"
+         "      // [sr] every sample failed the depth / stencil test: not counted by occlusion queries\n"
+         "      SpirvBuilder::IfBuilder sr_depth_failed(\n"
+         "          builder_->createBinOp(spv::OpIEqual, type_bool_,\n"
+         "                                builder_->createLoad(var_sr_fsi_depth_mask_, spv::NoPrecision),\n"
+         "                                const_uint_0_),\n"
+         "          spv::SelectionControlDontFlattenMask, *builder_);\n"
+         "      builder_->addExtension(\"SPV_EXT_demote_to_helper_invocation\");\n"
+         "      builder_->addCapability(spv::CapabilityDemoteToHelperInvocationEXT);\n"
+         "      builder_->createNoResultOp(spv::OpDemoteToHelperInvocationEXT);\n"
+         "      sr_depth_failed.makeEndIf();\n"
+         "    }\n"
+         "  }\n"
+         "}\n")
+
     # The PlayStation button prompts (ps5/sr_prompts.cpp): a texture about to be loaded is shown
     # to the app first (its guest data, physical address and size), which may write the
     # DualSense's glyph over the Xbox 360's before the GPU reads it.
     edit(sdk / "include" / "rex" / "graphics" / "pipeline" / "texture" / "cache.h",
          "namespace rex::graphics {\n",
          "namespace rex::graphics {\n\n"
-         "// [sr] Called (on the GPU thread) before a texture's guest data is read: its physical\n"
-         "// address, base level size and format (xenos::TextureFormat).\n"
-         "inline std::atomic<void (*)(uint32_t physical, uint32_t size, uint32_t format)>\n"
+         "// [sr] Called (on the GPU thread) before a texture's base level is uploaded from guest\n"
+         "// memory: its physical address, size and format (xenos::TextureFormat). Returns whether it\n"
+         "// changed the guest data (the range is then invalidated, so that the GPU's copy is redone).\n"
+         "inline std::atomic<bool (*)(uint32_t physical, uint32_t size, uint32_t format)>\n"
          "    g_sr_texture_load_hook{nullptr};\n")
+    # (in PrepareTextureLoad: RequestTextures' batched loads and LoadTextureData both pass there,
+    # before the shared memory's ranges are requested)
     edit(sdk / "src" / "graphics" / "pipeline" / "texture" / "cache.cpp",
-         "bool TextureCache::LoadTextureData(Texture& texture) {\n",
-         "bool TextureCache::LoadTextureData(Texture& texture) {\n"
-         "  if (auto hook = g_sr_texture_load_hook.load(std::memory_order_relaxed);  // [sr]\n"
-         "      hook && texture.key().base_page) {\n"
-         "    hook(texture.key().base_page << 12, texture.GetGuestBaseSize(), uint32_t(texture.key().format));\n"
-         "  }\n")
+         "  TextureKey texture_key = texture.key();\n"
+         "  if (base_outdated) {\n"
+         "    PendingSharedMemoryRange pending_range;\n",
+         "  TextureKey texture_key = texture.key();\n"
+         "  if (base_outdated) {\n"
+         "    if (auto hook = g_sr_texture_load_hook.load(std::memory_order_relaxed);  // [sr]\n"
+         "        hook && texture_key.base_page && !texture_key.scaled_resolve &&\n"
+         "        hook(texture_key.base_page << 12, texture.GetGuestBaseSize(), uint32_t(texture_key.format))) {\n"
+         "      shared_memory().InvalidateRangeNow(texture_key.base_page << 12, texture.GetGuestBaseSize());\n"
+         "    }\n"
+         "    PendingSharedMemoryRange pending_range;\n")
     # The PlayStation button prompts again (ps5/sr_prompts.cpp): what a game reads from its own
     # files is shown to the app, which writes the DualSense's glyphs over the parts of an archive
     # that hold the Xbox 360's (Saints Row's font glyphs, Saints Row 2's HUD images).
