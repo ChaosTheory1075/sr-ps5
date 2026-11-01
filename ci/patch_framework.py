@@ -2167,6 +2167,30 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     edit(rex_app, "  rex::InitLogging(log_config);\n",
          "  REX_BOOT_MARK(\"opening the log\");\n  rex::InitLogging(log_config);\n  REX_BOOT_MARK(\"log open\");\n")
 
+    # [sr] Paths aren't always UTF-8: Saints Row 2 handed a host task (an async file or content job) a
+    # name with a byte that isn't, utfcpp's checked iterator threw "Invalid UTF-8" and the task
+    # worker took the game down (REX_FATAL) on the way to the main menu. A byte that doesn't start a
+    # valid sequence is read as itself (Latin-1, as the 360's code pages mostly are), one byte on.
+    edit(sdk / "thirdparty" / "utfcpp" / "source" / "utf8" / "checked.h",
+         "            case internal::NOT_ENOUGH_ROOM :\n"
+         "                throw not_enough_room();\n"
+         "            case internal::INVALID_LEAD :\n"
+         "            case internal::INCOMPLETE_SEQUENCE :\n"
+         "            case internal::OVERLONG_SEQUENCE :\n"
+         "                throw invalid_utf8(static_cast<utfchar8_t>(*it));\n"
+         "            case internal::INVALID_CODE_POINT :\n"
+         "                throw invalid_code_point(cp);\n",
+         "            case internal::NOT_ENOUGH_ROOM :\n"
+         "            case internal::INVALID_LEAD :\n"
+         "            case internal::INCOMPLETE_SEQUENCE :\n"
+         "            case internal::OVERLONG_SEQUENCE :\n"
+         "            case internal::INVALID_CODE_POINT :\n"
+         "                // [sr] the byte as itself (Latin-1), one byte on: no throw\n"
+         "                if (it == end) return 0xFFFD;\n"
+         "                cp = static_cast<utfchar8_t>(*it);\n"
+         "                ++it;\n"
+         "                break;\n")
+
 
 if __name__ == "__main__":
     main()

@@ -306,3 +306,19 @@ extern "C" void sub_82704840(PPCContext& __restrict ctx, uint8_t* base) {
   logged = true;
 }
 #endif
+
+#if REX_PLATFORM_PS5 && SR_GAME == 1
+// The network object's update (827644C8 > 827703D8 > 827708A8) walks the connection list of a
+// lobby that was never made offline: r3 = 8 (null + 8), its first read at 0xC jumped the game out
+// right after the start-up movie. A list that isn't there has nothing in it.
+extern "C" void sub_827708A8(PPCContext& __restrict ctx, uint8_t* base) {
+  if (ctx.r3.u32 < 0x10000) {
+    static bool logged = false;
+    if (!logged) REXLOG_INFO("Saints Row: offline: no lobby connection list ({:08X})", ctx.r3.u32);
+    logged = true;
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_827708A8(ctx, base);
+}
+#endif
