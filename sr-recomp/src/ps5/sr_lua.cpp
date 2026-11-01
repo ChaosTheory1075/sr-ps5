@@ -14,12 +14,15 @@
 
 #include <SDL3/SDL_timer.h>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/memory.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
 #include SR_INIT_H
+
+REXCVAR_DECLARE(bool, sr_quick_menu);
 
 namespace srps5 {
 namespace {
@@ -186,6 +189,8 @@ void OnPcall(PPCContext& ctx, uint8_t* base) {
   static std::atomic<uint32_t> calls{0};
   if (calls.fetch_add(1) == 0) REXLOG_INFO("SAINTS ROW: ReInstated: the game's first script call (state {:08X})", ctx.r3.u32);
   if (t_busy || !ctx.r3.u32) return;
+  // (CHEAT MENU off: nothing of ours runs in the game's scripts)
+  if (!REXCVAR_GET(sr_quick_menu)) return;
   // Not while the game is starting: 45 s after its first script call.
   static const uint64_t first_call_ms = SDL_GetTicks();
   if (SDL_GetTicks() - first_call_ms < 45000) return;

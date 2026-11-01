@@ -84,6 +84,15 @@ uint64_t Fnv1a64(const uint8_t* p, size_t n) {
 void OnTextureLoad(uint32_t physical, uint32_t size, uint32_t format) {
   (void)format;
   if (!REXCVAR_GET(sr_ps_prompts)) return;
+  // (diagnostics: the small textures the GPU loads, with their fingerprints, the first 60)
+  static std::atomic<int> seen{0};
+  if (size <= 0x4000 && seen.load() < 60) {
+    if (auto* k = REX_KERNEL_STATE(); k && k->memory()) {
+      if (const uint8_t* g = k->memory()->TranslatePhysical<const uint8_t*>(physical); g && seen.fetch_add(1) < 60)
+        REXLOG_INFO("SAINTS ROW: ReInstated: texture {:08X} format {} size {:X} fnv {:016X} first {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+                    physical, format, size, Fnv1a64(g, size), g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
+    }
+  }
   bool sized = false;
   for (const TexturePatch& t : g_textures) sized |= t.size == size;
   if (!sized) return;
