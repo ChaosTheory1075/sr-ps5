@@ -39,6 +39,7 @@ namespace fs = std::filesystem;
 
 REXCVAR_DECLARE(std::string, present_effect);  // (the presenter's, ui/presenter.cpp)
 REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
+REXCVAR_DECLARE(bool, sr_ps_prompts);  // (ps5/sr_prompts.cpp)
 
 namespace {
 
@@ -188,6 +189,21 @@ void SrApp::OnPostLaunchModule(rex::system::XThread* thread) {
     srps5::install::PlacePendingSaves(g_app_root / "saves", kernel->user_profile()->xuid(), SR_GAME);
   srps5::StartDualSense(SR_GAME);
   srps5::InstallPrompts();
+#if SR_GAME == 2
+  // BUTTON PROMPTS PlayStation: the text's button pictures ([image:ui_ctrl_360_btn_a]) come from
+  // platform_<name>_us.be_strings, <name> the "Xbox360" at 820984B8 ("platform_%s"). The disc has
+  // platform_ps3_us too, whose pictures (ui_ctrl_ps3_btn_cross...) are in the same sheets
+  // (interface-backend's ui_bms_01): "ps3" there before the strings are loaded.
+  if (auto* kernel = REX_KERNEL_STATE(); kernel && REXCVAR_GET(sr_ps_prompts)) {
+    char* name = kernel->memory()->TranslateVirtual<char*>(0x820984B8);
+    if (name && std::memcmp(name, "Xbox360", 8) == 0) {
+      std::memcpy(name, "ps3\0\0\0\0", 8);
+      REXLOG_INFO("Saints Row 2: platform strings platform_ps3 (PlayStation button prompts in text)");
+    } else {
+      REXLOG_WARN("Saints Row 2: no \"Xbox360\" at 820984B8: the text keeps the Xbox 360's buttons");
+    }
+  }
+#endif
   // Bring-up: where every guest thread is, every 10 s for the first 3 minutes (a thread that never
   // waits - the main thread spinning on a loading screen - shows in no wait list).
   std::thread([] {
@@ -422,7 +438,6 @@ extern "C" void sub_82938428(PPCContext& __restrict ctx, uint8_t* base) {
 // pick them by asking get_platform() (824E9DE8: pushes "XBOX360"). It answers "PS3" while the menu's
 // BUTTON PROMPTS is PlayStation. (What else the scripts change for "PS3" is the online menus, the
 // cellphone's cheat warning and the pause menu's achievements page: nothing a PS5 player misses.)
-REXCVAR_DECLARE(bool, sr_ps_prompts);
 extern "C" void sub_824E9DE8(PPCContext& __restrict ctx, uint8_t* base) {
   if (!REXCVAR_GET(sr_ps_prompts)) {
     __imp__sub_824E9DE8(ctx, base);

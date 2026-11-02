@@ -2299,6 +2299,549 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "  }\n"
          "}\n")
 
+    # Readback only what the CPU reads (Max Payne 3 RePrescribed): "fast" copied every resolve of
+    # every frame back (Saints Row 2: ~45 a frame) and memcpy'd it into guest memory on the GPU
+    # thread. The CPU's reads are small (exposure, luminance): up to 256 KB, as Xenia's purpose for it.
+    edit(vcp,
+         "  if (!memory_->TranslatePhysical(written_address)) {\n    return true;\n  }\n",
+         "  if (!memory_->TranslatePhysical(written_address)) {\n    return true;\n  }\n"
+         "  if (written_length > (256u << 10) && !sr_cap.file) {  // [sr] only what the CPU reads\n"
+         "    return true;\n  }\n")
+    # ---- From Max Payne 3 RePrescribed: shaders and pipelines built off the GPU thread ----
+    vpc2 = sdk / "src" / "graphics" / "vulkan" / "pipeline_cache.cpp"
+    edit(vpc2,
+         "    if (found_pipeline == VK_NULL_HANDLE) {\n"
+         "      PipelineCreationArguments creation_arguments;\n",
+         "    if (found_pipeline == VK_NULL_HANDLE && use_async) {\n"
+         "      // [sr] not built yet (a stored one's first use, or one still being built): its\n"
+         "      // draws are skipped until a creation thread has it - the real one queued once, at\n"
+         "      // the draw's priority. Nothing is compiled here, on the GPU thread\n"
+         "      if (!it->second.is_placeholder.exchange(true, std::memory_order_acq_rel)) {\n"
+         "        PipelineCreationArguments creation_arguments_real;\n"
+         "        if (TryGetPipelineCreationArgumentsForDescription(description, &*it, creation_arguments_real)) {\n"
+         "          creation_arguments_real.priority = async_priority;\n"
+         "          {\n"
+         "            std::lock_guard<std::mutex> lock(creation_request_lock_);\n"
+         "            creation_queue_.push(creation_arguments_real);\n"
+         "          }\n"
+         "          creation_request_cond_.notify_one();\n"
+         "        } else {\n"
+         "          it->second.is_placeholder.store(false, std::memory_order_release);\n"
+         "        }\n"
+         "      }\n"
+         "      found_pipeline = it->second.pipeline.load(std::memory_order_acquire);\n"
+         "      if (found_pipeline == VK_NULL_HANDLE && it->second.is_placeholder.load(std::memory_order_acquire)) {\n"
+         "        pipeline_out = VK_NULL_HANDLE;\n"
+         "        pipeline_layout_out = nullptr;\n"
+         "        if (pipeline_handle_out) {\n"
+         "          *pipeline_handle_out = &it->second;\n"
+         "        }\n"
+         "        return true;\n"
+         "      }\n"
+         "    }\n"
+         "    if (found_pipeline == VK_NULL_HANDLE) {\n"
+         "      PipelineCreationArguments creation_arguments;\n")
+    # [sr] Every submission's end built the whole creation queue on the GPU thread
+    # (CreateQueuedPipelinesOnProcessorThread) and then waited for the creation threads'
+    # pipelines in flight, so the async path above stalled the frame anyway: with an empty
+    # cache (a new install) every new area's burst of pipelines froze the picture. Found in
+    # PROTOTYPE: ReEvolution (100-650 ms, all in "submit"). With async compilation the queue
+    # is left to the creation threads.
+    edit(vpc2,
+         "    if (startup_loading) {\n"
+         "      creation_request_cond_.notify_one();\n"
+         "    } else {\n",
+         "    if (startup_loading || REXCVAR_GET(async_shader_compilation)) {  // [sr]\n"
+         "      creation_request_cond_.notify_one();\n"
+         "    } else {\n")
+    # [sr] A shader met for the first time was translated (Xenos microcode to SPIR-V) on the
+    # GPU thread in the middle of its draw: about 25 ms each with the EDRAM emulated (612 in
+    # 1924 ms on 8 threads at startup), so a new area's ten or so new shaders held one frame
+    # 100-300 ms (sr_015.log: every hitch of a fresh-cache run in "draws", none in submit
+    # after the change above). Now worker threads translate them; the draw is skipped until
+    # its shaders are in, as a draw waiting for its pipeline is, and the GPU thread does only
+    # what it owns (the shader module and the binding layouts) once a translation is done.
+    # A shader's translations go to one worker at a time (as at startup).
+    vpch = sdk / "include" / "rex" / "graphics" / "vulkan" / "pipeline_cache.h"
+    edit(vpch,
+         "  bool EnsureShadersTranslated(VulkanShader::VulkanTranslation* vertex_shader,\n"
+         "                               VulkanShader::VulkanTranslation* pixel_shader);\n",
+         "  bool EnsureShadersTranslated(VulkanShader::VulkanTranslation* vertex_shader,\n"
+         "                               VulkanShader::VulkanTranslation* pixel_shader);\n"
+         "  // [sr] true while either is being translated on a worker (queued if new): skip the draw\n"
+         "  bool SrTranslationPending(VulkanShader::VulkanTranslation* vertex_shader,\n"
+         "                             VulkanShader::VulkanTranslation* pixel_shader);\n")
+    edit(vpch,
+         "  std::unique_ptr<SpirvShaderTranslator> shader_translator_;\n",
+         "  std::unique_ptr<SpirvShaderTranslator> shader_translator_;\n"
+         "  // [sr] Shader translation on worker threads (SrTranslationPending).\n"
+         "  void SrTranslationThread(SpirvShaderTranslator* translator);\n"
+         "  void SrStopTranslationThreads();\n"
+         "  std::mutex sr_translation_lock_;\n"
+         "  std::condition_variable sr_translation_cond_;\n"
+         "  std::deque<VulkanShader::VulkanTranslation*> sr_translation_queue_;\n"
+         "  std::vector<VulkanShader::VulkanTranslation*> sr_translation_done_;\n"
+         "  std::set<const void*> sr_translation_busy_shaders_;\n"
+         "  bool sr_translation_shutdown_ = false;\n"
+         "  // (the processor thread's own)\n"
+         "  std::set<VulkanShader::VulkanTranslation*> sr_translation_in_flight_;\n"
+         "  std::vector<std::unique_ptr<SpirvShaderTranslator>> sr_translation_translators_;\n"
+         "  std::vector<std::unique_ptr<rex::thread::Thread>> sr_translation_threads_;\n")
+    edit(vpc2,
+         "#include <rex/ui/vulkan/util.h>\n"
+         "\n"
+         "REXCVAR_DEFINE_INT32(\n"
+         "    vulkan_pipeline_creation_threads,",
+         "#include <rex/ui/vulkan/util.h>\n"
+         "\n"
+         "REXCVAR_DEFINE_INT32(sr_shader_translation_threads, 2, \"GPU/Vulkan\",\n"
+         "                     \"Threads translating new shaders while their draws wait (0: on the GPU thread, \"\n"
+         "                     \"in the draw)\")\n"
+         "    .range(0, 8);\n"
+         "\n"
+         "REXCVAR_DEFINE_INT32(\n"
+         "    vulkan_pipeline_creation_threads,")
+    edit(vpc2,
+         "void VulkanPipelineCache::Shutdown() {\n",
+         "void VulkanPipelineCache::SrTranslationThread(SpirvShaderTranslator* translator) {\n"
+         "  for (;;) {\n"
+         "    VulkanShader::VulkanTranslation* job = nullptr;\n"
+         "    {\n"
+         "      std::unique_lock<std::mutex> lock(sr_translation_lock_);\n"
+         "      for (;;) {\n"
+         "        if (sr_translation_shutdown_) return;\n"
+         "        auto it = std::find_if(sr_translation_queue_.begin(), sr_translation_queue_.end(),\n"
+         "                               [this](VulkanShader::VulkanTranslation* t) {\n"
+         "                                 return !sr_translation_busy_shaders_.count(&t->shader());\n"
+         "                               });\n"
+         "        if (it != sr_translation_queue_.end()) {\n"
+         "          job = *it;\n"
+         "          sr_translation_queue_.erase(it);\n"
+         "          sr_translation_busy_shaders_.insert(&job->shader());\n"
+         "          break;\n"
+         "        }\n"
+         "        sr_translation_cond_.wait(lock);\n"
+         "      }\n"
+         "    }\n"
+         "    translator->TranslateAnalyzedShader(*job);\n"
+         "    {\n"
+         "      std::lock_guard<std::mutex> lock(sr_translation_lock_);\n"
+         "      sr_translation_busy_shaders_.erase(&job->shader());\n"
+         "      sr_translation_done_.push_back(job);\n"
+         "    }\n"
+         "    sr_translation_cond_.notify_all();\n"
+         "  }\n"
+         "}\n"
+         "\n"
+         "void VulkanPipelineCache::SrStopTranslationThreads() {\n"
+         "  {\n"
+         "    std::lock_guard<std::mutex> lock(sr_translation_lock_);\n"
+         "    sr_translation_shutdown_ = true;\n"
+         "  }\n"
+         "  sr_translation_cond_.notify_all();\n"
+         "  for (const auto& thread : sr_translation_threads_) rex::thread::Wait(thread.get(), false);\n"
+         "  sr_translation_threads_.clear();\n"
+         "  sr_translation_translators_.clear();\n"
+         "  sr_translation_queue_.clear();\n"
+         "  sr_translation_done_.clear();\n"
+         "  sr_translation_busy_shaders_.clear();\n"
+         "  sr_translation_in_flight_.clear();\n"
+         "}\n"
+         "\n"
+         "bool VulkanPipelineCache::SrTranslationPending(VulkanShader::VulkanTranslation* vertex_shader,\n"
+         "                                                VulkanShader::VulkanTranslation* pixel_shader) {\n"
+         "  const int32_t threads = REXCVAR_GET(sr_shader_translation_threads);\n"
+         "  if (threads <= 0 || sr_translation_shutdown_) return false;\n"
+         "  if (sr_translation_threads_.empty()) {\n"
+         "    const ui::vulkan::VulkanDevice* const device = command_processor_.GetVulkanDevice();\n"
+         "    const bool fsi = render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;\n"
+         "    for (int32_t i = 0; i < threads; ++i) {\n"
+         "      sr_translation_translators_.push_back(std::make_unique<SpirvShaderTranslator>(\n"
+         "          SpirvShaderTranslator::Features(device), render_target_cache_.msaa_2x_attachments_supported(),\n"
+         "          render_target_cache_.msaa_2x_no_attachments_supported(), fsi,\n"
+         "          render_target_cache_.draw_resolution_scale_x(), render_target_cache_.draw_resolution_scale_y()));\n"
+         "      SpirvShaderTranslator* translator = sr_translation_translators_.back().get();\n"
+         "      sr_translation_threads_.push_back(\n"
+         "          rex::thread::Thread::Create({}, [this, translator]() { SrTranslationThread(translator); }));\n"
+         "      sr_translation_threads_.back()->set_name(\"Vulkan Shader Translation\");\n"
+         "    }\n"
+         "    REXGPU_INFO(\"sr: new shaders translated on {} threads while their draws wait\", threads);\n"
+         "  }\n"
+         "  if (!sr_translation_in_flight_.empty()) {\n"
+         "    std::vector<VulkanShader::VulkanTranslation*> done;\n"
+         "    {\n"
+         "      std::lock_guard<std::mutex> lock(sr_translation_lock_);\n"
+         "      done.swap(sr_translation_done_);\n"
+         "    }\n"
+         "    for (VulkanShader::VulkanTranslation* translation : done) {\n"
+         "      sr_translation_in_flight_.erase(translation);\n"
+         "      // (translated already: its module and binding layouts, here on the processor thread)\n"
+         "      TranslateAnalyzedShader(*shader_translator_, *translation);\n"
+         "    }\n"
+         "  }\n"
+         "  bool pending = false;\n"
+         "  for (VulkanShader::VulkanTranslation* translation : {vertex_shader, pixel_shader}) {\n"
+         "    if (!translation) continue;\n"
+         "    if (sr_translation_in_flight_.count(translation)) {\n"
+         "      pending = true;\n"
+         "      continue;\n"
+         "    }\n"
+         "    if (translation->is_translated()) continue;\n"
+         "    if (!translation->shader().is_ucode_analyzed()) {\n"
+         "      translation->shader().AnalyzeUcode(ucode_disasm_buffer_);\n"
+         "    }\n"
+         "    sr_translation_in_flight_.insert(translation);\n"
+         "    {\n"
+         "      std::lock_guard<std::mutex> lock(sr_translation_lock_);\n"
+         "      sr_translation_queue_.push_back(translation);\n"
+         "    }\n"
+         "    sr_translation_cond_.notify_one();\n"
+         "    pending = true;\n"
+         "  }\n"
+         "  return pending;\n"
+         "}\n"
+         "\n"
+         "void VulkanPipelineCache::Shutdown() {\n"
+         "  SrStopTranslationThreads();  // [sr]\n")
+    edit(vcp,
+         "    if (!pipeline_cache_->EnsureShadersTranslated(vertex_shader_translation,\n"
+         "                                                  pixel_shader_translation)) {\n"
+         "      return draw_fail(\"shader_translation\");\n"
+         "    }\n",
+         "    // [sr] a new shader is translated on a worker: the draw waits, as for its pipeline\n"
+         "    if (pipeline_cache_->SrTranslationPending(vertex_shader_translation, pixel_shader_translation)) {\n"
+         "      frame_used_async_placeholder_pipeline_ = true;\n"
+         "      ++frame_flow_draw_placeholders_;\n"
+         "      return true;\n"
+         "    }\n"
+         "    if (!pipeline_cache_->EnsureShadersTranslated(vertex_shader_translation,\n"
+         "                                                  pixel_shader_translation)) {\n"
+         "      return draw_fail(\"shader_translation\");\n"
+         "    }\n")
+    # [sr] New pipelines the same way: queued for the creation threads, the draws skipped until
+    # one is built - depth-only ones too (no pixel shader: shadows, the depth pass), which were
+    # built on the GPU thread, as was the placeholder every other one got first. 529 of the 1014
+    # pipelines of the first chapter 1 after a fresh install were built there (sr_002.log),
+    # 184 in the minute from the cutscene to gameplay: the freezes.
+    edit(vpc2,
+         "  bool use_async = REXCVAR_GET(async_shader_compilation) && !creation_threads_.empty() &&\n"
+         "                   pixel_shader && placeholder_pixel_shader_ != VK_NULL_HANDLE;\n",
+         "  bool use_async = REXCVAR_GET(async_shader_compilation) && !creation_threads_.empty();\n")
+    edit(vpc2,
+         "  bool queued_async_creation = false;\n"
+         "  if (use_async) {\n"
+         "    creation_arguments_real.priority = async_priority;\n"
+         "    PipelineCreationArguments creation_arguments_placeholder;\n"
+         "    if (TryGetPipelineCreationArgumentsForDescription(description, &pipeline,\n"
+         "                                                      creation_arguments_placeholder, true)) {\n"
+         "      pipeline.second.is_placeholder.store(true, std::memory_order_release);\n"
+         "      if (EnsurePipelineCreated(creation_arguments_placeholder, placeholder_pixel_shader_)) {\n"
+         "        {\n"
+         "          std::lock_guard<std::mutex> lock(creation_request_lock_);\n"
+         "          creation_queue_.push(creation_arguments_real);\n"
+         "        }\n"
+         "        creation_request_cond_.notify_one();\n"
+         "        queued_async_creation = true;\n"
+         "      } else {\n"
+         "        pipeline.second.is_placeholder.store(false, std::memory_order_release);\n"
+         "      }\n"
+         "    }\n"
+         "  }\n",
+         "  bool queued_async_creation = false;\n"
+         "  if (use_async) {\n"
+         "    // [sr] queued, no placeholder built: the draws are skipped until it's ready\n"
+         "    creation_arguments_real.priority = async_priority;\n"
+         "    pipeline.second.is_placeholder.store(true, std::memory_order_release);\n"
+         "    {\n"
+         "      std::lock_guard<std::mutex> lock(creation_request_lock_);\n"
+         "      creation_queue_.push(creation_arguments_real);\n"
+         "    }\n"
+         "    creation_request_cond_.notify_one();\n"
+         "    queued_async_creation = true;\n"
+         "  }\n")
+    edit(vpc2,
+         "  last_pipeline_ = &pipeline;\n"
+         "  pipeline_out = pipeline.second.pipeline.load(std::memory_order_acquire);\n"
+         "  pipeline_layout_out = pipeline.second.pipeline_layout.load(std::memory_order_acquire);\n"
+         "  if (pipeline_handle_out) {\n"
+         "    *pipeline_handle_out = &pipeline.second;\n"
+         "  }\n"
+         "  return pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr;\n",
+         "  last_pipeline_ = &pipeline;\n"
+         "  pipeline_out = pipeline.second.pipeline.load(std::memory_order_acquire);\n"
+         "  pipeline_layout_out = pipeline.second.pipeline_layout.load(std::memory_order_acquire);\n"
+         "  if (pipeline_handle_out) {\n"
+         "    *pipeline_handle_out = &pipeline.second;\n"
+         "  }\n"
+         "  // [sr] (one being built: the draw is skipped, not failed)\n"
+         "  return (pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr) ||\n"
+         "         (queued_async_creation && pipeline_out == VK_NULL_HANDLE);\n")
+
+    # The driver's compiled pipelines kept across sessions (a VkPipelineCache
+    # in <cache>/shaders, as gta4-ps5's own renderer keeps one): without it
+    # every session compiled every pipeline again, and the stutters in
+    # gameplay were those compiles (sr_008.log: each drop a burst of
+    # "Creating graphics pipeline state"). Saved from the GPU thread's 10 s
+    # report when new pipelines were made, written on a thread of its own.
+    edit(vpc2,
+         "namespace rex::graphics::vulkan {\n",
+         "namespace rex::graphics::vulkan {\n\n"
+         "// [sr] the driver's pipeline cache, kept across sessions (ci/patch_framework.py)\n"
+         "namespace {\n"
+         "VkPipelineCache sr_vk_cache = VK_NULL_HANDLE;\n"
+         "const ui::vulkan::VulkanDevice* sr_vk_cache_device = nullptr;\n"
+         "std::string sr_vk_cache_path;\n"
+         "std::atomic<uint32_t> sr_vk_cache_new{0};\n"
+         "std::atomic<bool> sr_vk_cache_saving{false};\n"
+         "void SrOpenPipelineCache(const ui::vulkan::VulkanDevice* device, const std::filesystem::path& path) {\n"
+         "  if (sr_vk_cache != VK_NULL_HANDLE || !device) return;\n"
+         "  std::vector<uint8_t> data;\n"
+         "  if (std::FILE* f = std::fopen(path.string().c_str(), \"rb\")) {\n"
+         "    std::fseek(f, 0, SEEK_END);\n"
+         "    const long size = std::ftell(f);\n"
+         "    std::fseek(f, 0, SEEK_SET);\n"
+         "    if (size > 0 && size < (256l << 20)) {\n"
+         "      data.resize(size_t(size));\n"
+         "      if (std::fread(data.data(), 1, data.size(), f) != data.size()) data.clear();\n"
+         "    }\n"
+         "    std::fclose(f);\n"
+         "  }\n"
+         "  VkPipelineCacheCreateInfo info = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};\n"
+         "  info.initialDataSize = data.size();\n"
+         "  info.pInitialData = data.empty() ? nullptr : data.data();\n"
+         "  const auto& dfn = device->functions();\n"
+         "  if (dfn.vkCreatePipelineCache(device->device(), &info, nullptr, &sr_vk_cache) != VK_SUCCESS) {\n"
+         "    info.initialDataSize = 0;\n"
+         "    info.pInitialData = nullptr;\n"
+         "    if (dfn.vkCreatePipelineCache(device->device(), &info, nullptr, &sr_vk_cache) != VK_SUCCESS)\n"
+         "      sr_vk_cache = VK_NULL_HANDLE;\n"
+         "  }\n"
+         "  sr_vk_cache_device = device;\n"
+         "  sr_vk_cache_path = path.string();\n"
+         "  REXGPU_INFO(\"sr: Vulkan pipeline cache {} ({} KB) at {}\", sr_vk_cache ? \"open\" : \"unavailable\",\n"
+         "              data.size() >> 10, sr_vk_cache_path);\n"
+         "}\n"
+         "}  // namespace\n\n"
+         "// From the GPU thread's 10 s report: saved when pipelines were made since.\n"
+         "void SrSavePipelineCache() {\n"
+         "  // (at most once a minute, and all of it on a thread of its own: reading the\n"
+         "  // 13-18 MB cache on the GPU thread every 10 s was a hitch in itself)\n"
+         "  static uint32_t reports = 0;\n"
+         "  if (sr_vk_cache == VK_NULL_HANDLE || !sr_vk_cache_new.load() || ++reports < 6) return;\n"
+         "  if (sr_vk_cache_saving.exchange(true)) return;\n"
+         "  reports = 0;\n"
+         "  const uint32_t made = sr_vk_cache_new.exchange(0);\n"
+         "  std::thread([made]() {\n"
+         "    const auto& dfn = sr_vk_cache_device->functions();\n"
+         "    size_t size = 0;\n"
+         "    std::vector<uint8_t> data;\n"
+         "    if (dfn.vkGetPipelineCacheData(sr_vk_cache_device->device(), sr_vk_cache, &size, nullptr) == VK_SUCCESS &&\n"
+         "        size) {\n"
+         "      data.resize(size);\n"
+         "      if (dfn.vkGetPipelineCacheData(sr_vk_cache_device->device(), sr_vk_cache, &size, data.data()) !=\n"
+         "          VK_SUCCESS)\n"
+         "        data.clear();\n"
+         "      data.resize(std::min(size, data.size()));\n"
+         "    }\n"
+         "    bool ok = false;\n"
+         "    if (!data.empty()) {\n"
+         "      const std::string tmp = sr_vk_cache_path + \".tmp\";\n"
+         "      if (std::FILE* f = std::fopen(tmp.c_str(), \"wb\")) {\n"
+         "        ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();\n"
+         "        ok = std::fclose(f) == 0 && ok;\n"
+         "      }\n"
+         "      if (ok) ok = std::rename(tmp.c_str(), sr_vk_cache_path.c_str()) == 0;\n"
+         "    }\n"
+         "    REXGPU_INFO(\"sr: Vulkan pipeline cache saved ({} KB, {} new pipelines){}\", data.size() >> 10, made,\n"
+         "                ok ? \"\" : \" - FAILED\");\n"
+         "    sr_vk_cache_saving.store(false);\n"
+         "  }).detach();\n"
+         "}\n")
+    edit(vpc2, "#include <algorithm>\n", "#include <algorithm>\n#include <cstdio>\n#include <filesystem>\n#include <thread>\n")
+    edit(vpc2,
+         "  auto shader_storage_root = cache_root / \"shaders\";\n"
+         "  auto shader_storage_shareable_root = shader_storage_root / \"shareable\";\n",
+         "  auto shader_storage_root = cache_root / \"shaders\";\n"
+         "  auto shader_storage_shareable_root = shader_storage_root / \"shareable\";\n"
+         "  {\n"
+         "    std::error_code sr_ec;\n"
+         "    std::filesystem::create_directories(shader_storage_root, sr_ec);\n"
+         "    SrOpenPipelineCache(command_processor_.GetVulkanDevice(),\n"
+         "                         shader_storage_root / fmt::format(\"{:08X}.vk-pipelines.bin\", title_id));\n"
+         "  }\n")
+    edit(vpc2,
+         "  VkResult create_result = dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,\n"
+         "                                                         &pipeline_create_info, nullptr, &pipeline);\n",
+         "  VkResult create_result = dfn.vkCreateGraphicsPipelines(device, sr_vk_cache, 1,\n"
+         "                                                         &pipeline_create_info, nullptr, &pipeline);\n"
+         "  if (create_result == VK_SUCCESS && sr_vk_cache != VK_NULL_HANDLE) sr_vk_cache_new.fetch_add(1);\n")
+    edit(vcp,
+         "      last_us = now;\n      frames = 0;\n    }\n  }\n",
+         "      last_us = now;\n      frames = 0;\n      SrSavePipelineCache();  // (pipeline_cache.cpp)\n    }\n  }\n")
+    edit(vcp,
+         "namespace rex::graphics::vulkan {\n\nnamespace {\n",
+         "namespace rex::graphics::vulkan {\n\nvoid SrSavePipelineCache();  // [sr] pipeline_cache.cpp\n\nnamespace {\n")
+
+    # The pipeline description storage (<title>.fsi.vk.xpso) held 229 pipelines
+    # in every session since the first ones, though each session made new ones
+    # (sr_001.log, 20:22): so every session translated and built those again
+    # mid-game. How many were read, kept and written, for the log; and the
+    # files seeked to their end before the writer appends.
+    edit(vpc2,
+         "      pipeline_stored_descriptions.resize(pipeline_storage_kept_count);\n",
+         "      pipeline_stored_descriptions.resize(pipeline_storage_kept_count);\n"
+         "      REXGPU_INFO(\"sr: pipeline storage: {} read, {} kept, {} unsupported, {} corrupted\",\n"
+         "                  pipeline_storage_read_count, pipeline_storage_kept_count,\n"
+         "                  pipeline_storage_skipped_unsupported_count, pipeline_storage_skipped_corrupted_count);\n")
+    edit(vpc2,
+         "    rex::filesystem::TruncateStdioFile(shader_storage_file_, shader_storage_valid_bytes);\n",
+         "    rex::filesystem::TruncateStdioFile(shader_storage_file_, shader_storage_valid_bytes);\n"
+         "    rex::filesystem::Seek(shader_storage_file_, 0, SEEK_END);  // [sr] (for the writer)\n"
+         "    REXGPU_INFO(\"sr: shader storage: {} KB of shaders\", shader_storage_valid_bytes >> 10);\n")
+    edit(vpc2,
+         "  shader_storage_cache_root_ = cache_root;\n  shader_storage_title_id_ = title_id;\n",
+         "  rex::filesystem::Seek(pipeline_storage_file_, 0, SEEK_END);  // [sr] (for the writer)\n"
+         "  shader_storage_cache_root_ = cache_root;\n  shader_storage_title_id_ = title_id;\n")
+    edit(vpc2,
+         "    if (write_pipeline) {\n"
+         "      assert_not_null(pipeline_storage_file_);\n"
+         "      fwrite(&pipeline_description, sizeof(pipeline_description), 1, pipeline_storage_file_);\n"
+         "    }\n",
+         "    if (write_pipeline) {\n"
+         "      assert_not_null(pipeline_storage_file_);\n"
+         "      const size_t sr_written =\n"
+         "          fwrite(&pipeline_description, sizeof(pipeline_description), 1, pipeline_storage_file_);\n"
+         "      static uint32_t sr_writes = 0, sr_failed = 0;\n"
+         "      sr_failed += sr_written != 1;\n"
+         "      if ((++sr_writes % 50) == 1 || sr_written != 1)\n"
+         "        REXGPU_INFO(\"sr: pipeline storage: {} written this session ({} failed)\", sr_writes, sr_failed);\n"
+         "    }\n")
+
+    # The stored shaders were translated one at a time on the GPU thread, before
+    # the game's main thread is even resumed (rex_app.cpp: blocking): the wait
+    # after PLAY grew with every shader the player had met. Now on several
+    # threads, each with a translator of its own and a shader's modifications
+    # on one thread, as the D3D12 cache does; the shader modules and binding
+    # layouts after, on this thread (TranslateAnalyzedShader skips the
+    # translator for a translation that's done).
+    edit(vpc2, "#include <array>\n", "#include <array>\n#include <chrono>\n")
+    edit(vpc2,
+         "  if (!translator.TranslateAnalyzedShader(translation)) {\n",
+         "  if (translation.is_translated() ? !translation.is_valid()\n"
+         "                                  : !translator.TranslateAnalyzedShader(translation)) {\n")
+    edit(vpc2,
+         "  // Translate shader modifications needed for stored pipelines.\n"
+         "  for (const std::pair<uint64_t, uint64_t>& translation_needed : shader_translations_needed) {\n"
+         "    auto shader_it = shaders_.find(translation_needed.first);\n"
+         "    if (shader_it == shaders_.end()) {\n"
+         "      continue;\n"
+         "    }\n"
+         "    auto* shader = shader_it->second;\n"
+         "    if (!shader->is_ucode_analyzed()) {\n"
+         "      shader->AnalyzeUcode(ucode_disasm_buffer_);\n"
+         "    }\n"
+         "    bool translation_is_new = false;\n"
+         "    auto* translation = static_cast<VulkanShader::VulkanTranslation*>(\n"
+         "        shader->GetOrCreateTranslation(translation_needed.second, &translation_is_new));\n"
+         "    if (!translation->is_translated() &&\n"
+         "        !TranslateAnalyzedShader(*shader_translator_, *translation)) {\n"
+         "      if (translation_is_new) {\n"
+         "        shader->DestroyTranslation(translation_needed.second);\n"
+         "      }\n"
+         "    }\n"
+         "  }\n",
+         "  // Translate shader modifications needed for stored pipelines.\n"
+         "  // [sr] on several threads (ci/patch_framework.py)\n"
+         "  {\n"
+         "    const auto sr_start = std::chrono::steady_clock::now();\n"
+         "    struct SrTranslation {\n"
+         "      VulkanShader* shader;\n"
+         "      uint64_t modification;\n"
+         "      VulkanShader::VulkanTranslation* translation;\n"
+         "      bool is_new;\n"
+         "    };\n"
+         "    std::vector<SrTranslation> sr_jobs;  // (a shader's together: the set's order)\n"
+         "    for (const std::pair<uint64_t, uint64_t>& translation_needed : shader_translations_needed) {\n"
+         "      auto shader_it = shaders_.find(translation_needed.first);\n"
+         "      if (shader_it == shaders_.end()) {\n"
+         "        continue;\n"
+         "      }\n"
+         "      auto* shader = shader_it->second;\n"
+         "      if (!shader->is_ucode_analyzed()) {\n"
+         "        shader->AnalyzeUcode(ucode_disasm_buffer_);\n"
+         "      }\n"
+         "      bool translation_is_new = false;\n"
+         "      auto* translation = static_cast<VulkanShader::VulkanTranslation*>(\n"
+         "          shader->GetOrCreateTranslation(translation_needed.second, &translation_is_new));\n"
+         "      if (!translation->is_translated()) {\n"
+         "        sr_jobs.push_back({shader, translation_needed.second, translation, translation_is_new});\n"
+         "      }\n"
+         "    }\n"
+         "    std::vector<size_t> sr_groups;  // (where each shader's start, and the end)\n"
+         "    for (size_t i = 0; i < sr_jobs.size(); ++i) {\n"
+         "      if (!i || sr_jobs[i].shader != sr_jobs[i - 1].shader) sr_groups.push_back(i);\n"
+         "    }\n"
+         "    sr_groups.push_back(sr_jobs.size());\n"
+         "    std::atomic<size_t> sr_next_group(0);\n"
+         "    auto sr_translate = [&](SpirvShaderTranslator& translator) {\n"
+         "      for (size_t g; (g = sr_next_group.fetch_add(1)) + 1 < sr_groups.size();) {\n"
+         "        for (size_t i = sr_groups[g]; i < sr_groups[g + 1]; ++i) {\n"
+         "          translator.TranslateAnalyzedShader(*sr_jobs[i].translation);\n"
+         "        }\n"
+         "      }\n"
+         "    };\n"
+         "    const uint32_t sr_cpus = std::max(rex::thread::logical_processor_count(), uint32_t(2));\n"
+         "    const size_t sr_threads =\n"
+         "        std::min<size_t>(std::min<uint32_t>(sr_cpus - 1, 8), sr_groups.size() - 1);\n"
+         "    if (sr_threads > 1) {\n"
+         "      const ui::vulkan::VulkanDevice* const sr_device = command_processor_.GetVulkanDevice();\n"
+         "      const bool sr_fsi =\n"
+         "          render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;\n"
+         "      std::vector<std::unique_ptr<SpirvShaderTranslator>> sr_translators;\n"
+         "      std::vector<std::unique_ptr<rex::thread::Thread>> sr_workers;\n"
+         "      for (size_t i = 1; i < sr_threads; ++i) {\n"
+         "        sr_translators.push_back(std::make_unique<SpirvShaderTranslator>(\n"
+         "            SpirvShaderTranslator::Features(sr_device),\n"
+         "            render_target_cache_.msaa_2x_attachments_supported(),\n"
+         "            render_target_cache_.msaa_2x_no_attachments_supported(), sr_fsi,\n"
+         "            render_target_cache_.draw_resolution_scale_x(),\n"
+         "            render_target_cache_.draw_resolution_scale_y()));\n"
+         "        SpirvShaderTranslator* translator = sr_translators.back().get();\n"
+         "        sr_workers.push_back(\n"
+         "            rex::thread::Thread::Create({}, [&sr_translate, translator]() { sr_translate(*translator); }));\n"
+         "        sr_workers.back()->set_name(\"Vulkan Shader Translation\");\n"
+         "      }\n"
+         "      sr_translate(*shader_translator_);\n"
+         "      for (const auto& worker : sr_workers) rex::thread::Wait(worker.get(), false);\n"
+         "    } else {\n"
+         "      sr_translate(*shader_translator_);\n"
+         "    }\n"
+         "    for (const SrTranslation& job : sr_jobs) {\n"
+         "      if (!TranslateAnalyzedShader(*shader_translator_, *job.translation) && job.is_new) {\n"
+         "        job.shader->DestroyTranslation(job.modification);\n"
+         "      }\n"
+         "    }\n"
+         "    REXGPU_INFO(\"sr: shader storage: {} shader translations for the stored pipelines in {} ms ({} threads)\",\n"
+         "                sr_jobs.size(),\n"
+         "                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -\n"
+         "                                                                      sr_start)\n"
+         "                    .count(),\n"
+         "                std::max<size_t>(sr_threads, 1));\n"
+         "  }\n")
+
+    # The storage files stay open all session, and the PS5 ends the game
+    # without closing them: what they gained never reached the drive
+    # (sr_002.log: 101 pipelines written, 229 read at the next start, as in
+    # every session since the first). Each flush now goes to the drive.
+    edit(vpc2, "#include <algorithm>\n#include <cstdio>\n",
+         "#include <algorithm>\n#include <cstdio>\n#include <unistd.h>\n")
+    edit(vpc2,
+         "      fflush(shader_storage_file_);\n",
+         "      fflush(shader_storage_file_);\n      fsync(fileno(shader_storage_file_));  // [sr]\n")
+    edit(vpc2,
+         "      fflush(pipeline_storage_file_);\n",
+         "      fflush(pipeline_storage_file_);\n      fsync(fileno(pipeline_storage_file_));  // [sr]\n")
+
     # The PlayStation button prompts (ps5/sr_prompts.cpp): a texture about to be loaded is shown
     # to the app first (its guest data, physical address and size), which may write the
     # DualSense's glyph over the Xbox 360's before the GPU reads it.

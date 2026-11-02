@@ -172,7 +172,7 @@ LuaCall OnPlayer(const char* function) { return Call(function, {LuaArg::Str(kPla
 // The tick: the cheats held, and the player's state for the DualSense. The games' own script API,
 // as their missions call it: get_max_hit_points / get_current_hit_points / character_is_dead,
 // turn_invulnerable / turn_vulnerable, notoriety_reset("police"), set_ignore_ai_flag.
-// (results: [0] max, [1] health, [2] dead; then the cheats')
+// (results: [0] max, [1] health, [2] dead (Saints Row 2 only); then the cheats')
 struct Held {
   uint32_t generation = 0;
   bool god = false, ignore = false;
@@ -180,11 +180,18 @@ struct Held {
 Held g_held;  // (the game thread's: the tick's make and done run there)
 
 std::vector<LuaCall> MakeTick() {
-  std::vector<LuaCall> calls = {OnPlayer("get_max_hit_points"), OnPlayer("get_current_hit_points"),
-                                OnPlayer("character_is_dead")};
   const uint32_t gen = g_generation.load();
   const bool again = g_held.generation != gen;
   const bool god = g_on[kGod].load(), ignore = g_on[kIgnored].load();
+  // Nothing held and nothing to undo: no calls at all. (Calling into the scripts five times a
+  // second while no cheat was on kept Saints Row's first mission from starting at its marker.)
+  if (!god && !ignore && !g_on[kNoCops].load() && !g_held.god && !g_held.ignore) {
+    g_held.generation = gen;
+    return {};
+  }
+  // (Saints Row has no character_is_dead)
+  std::vector<LuaCall> calls = {OnPlayer("get_max_hit_points"), OnPlayer("get_current_hit_points")};
+  if (SR_GAME == 2) calls.push_back(OnPlayer("character_is_dead"));
   if (god && (again || !g_held.god)) calls.push_back(OnPlayer("turn_invulnerable"));
   if (!god && g_held.god) calls.push_back(OnPlayer("turn_vulnerable"));
   if (g_on[kNoCops].load()) calls.push_back(Call("notoriety_reset", {LuaArg::Str("police")}));
@@ -197,10 +204,10 @@ std::vector<LuaCall> MakeTick() {
 void TickDone(const std::vector<LuaResult>& out) {
   PlayerStatus s;
   s.updated_ms = SDL_GetTicks();
-  if (out.size() >= 3 && out[0].ok && out[1].ok && out[0].value > 0) {
+  if (out.size() >= 2 && out[0].ok && out[1].ok && out[0].value > 0) {
     s.max_health = float(out[0].value);
     s.health = float(out[1].value);
-    s.in_game = !(out[2].ok && out[2].value == 1);
+    s.in_game = !(SR_GAME == 2 && out.size() > 2 && out[2].ok && out[2].value == 1);
   }
   SetPlayerStatus(s);
 }

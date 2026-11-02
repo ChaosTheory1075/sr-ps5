@@ -227,8 +227,11 @@ void OnPcall(PPCContext& ctx, uint8_t* base) {
     }
   } else {
     g_last_tick = SDL_GetTicks();
-    const std::vector<LuaResult> out = Run(ctx, base, L, make());
-    if (out.empty()) {
+    // (no calls: no cheat held - the game's scripts are left alone)
+    const std::vector<LuaCall> calls = make();
+    const std::vector<LuaResult> out = calls.empty() ? std::vector<LuaResult>{} : Run(ctx, base, L, calls);
+    if (calls.empty()) {
+    } else if (out.empty()) {
       g_last_tick = g_last_tick + 50 - g_period;  // (another state gets the tick, a moment on)
     } else {
       if (g_reports.fetch_add(1) < 3) REXLOG_INFO("SAINTS ROW: ReInstated: Lua tick on {:08X}: {} results", L, out.size());
