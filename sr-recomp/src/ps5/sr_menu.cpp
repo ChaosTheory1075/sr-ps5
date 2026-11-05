@@ -287,6 +287,8 @@ struct Settings {
     rex::cvar::SetFlagByName("vsync", "true");
     // (both games wait two vblanks a frame: their 30 fps, or 60 with the vblanks twice as fast)
     rex::cvar::SetFlagByName("guest_vblank_scale", fps60 ? "2" : "1");
+    // (Saints Row 2's motion blur took the frame's time: at 60, half as strong. Its 1/30 s then.)
+    rex::cvar::SetFlagByName("sr_motion_blur_fix", fps60 ? "true" : "false");
     {
       // (init-only, and the start's flags are final by now; the GPU is set up after this menu)
       rex::cvar::testing::ScopedLifecycleOverride override_init_only;  // (always built, cvar.cpp)

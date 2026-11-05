@@ -42,6 +42,10 @@ REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
 REXCVAR_DECLARE(bool, sr_ps_prompts);  // (ps5/sr_prompts.cpp)
 REXCVAR_DEFINE_BOOL(sr_tree_detail, false, "SAINTS ROW",
                     "Saints Row: the trees always drawn with their high-detail models (Xenia's Tree LODs patch)");
+REXCVAR_DEFINE_BOOL(sr_motion_blur_fix, false, "SAINTS ROW",
+                    "Saints Row 2: the motion blur as strong at 60 fps as at 30 (Xenia's Motion Blur Strength Fix)");
+// (read by the recompiled 821D4F28: tools/local/patch_generated.py)
+extern "C" bool sr_motion_blur_fix() { return REXCVAR_GET(sr_motion_blur_fix); }
 
 namespace {
 
@@ -214,6 +218,8 @@ void SrApp::OnPostLaunchModule(rex::system::XThread* thread) {
   }
 #endif
 #if SR_GAME == 2
+  if (REXCVAR_GET(sr_motion_blur_fix))
+    REXLOG_INFO("Saints Row 2: motion blur at its 30 fps strength (60 fps; Xenia's Motion Blur Strength Fix)");
   // BUTTON PROMPTS PlayStation: the text's button pictures ([image:ui_ctrl_360_btn_a]) come from
   // platform_<name>_us.be_strings, <name> the "Xbox360" at 820984B8 ("platform_%s"). The disc has
   // platform_ps3_us too, whose pictures (ui_ctrl_ps3_btn_cross...) are in the same sheets

@@ -113,6 +113,8 @@ for g in 1 2; do
     ls -1t "$W/gen" | tail -n +7 | while read -r old; do rm -rf "$W/gen/$old"; done
   fi
   cp -r "$W/gen/$gen_key/generated" "$W/fw-new/$M/p$g/generated"
+  # (Xenia's one-instruction game patches, behind the app's switches: tools/local/patch_generated.py)
+  python3 tools/local/patch_generated.py $g "$W/fw-new/$M/p$g/generated" || exit 1
   cp "$W/gen/$gen_key/sr${g}_config.toml" "$W/fw-new/$M/p$g/sr${g}_config.toml"
 done
 
