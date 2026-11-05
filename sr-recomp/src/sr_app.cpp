@@ -189,6 +189,14 @@ void SrApp::OnPostLaunchModule(rex::system::XThread* thread) {
     srps5::install::PlacePendingSaves(g_app_root / "saves", kernel->user_profile()->xuid(), SR_GAME);
   srps5::StartDualSense(SR_GAME);
   srps5::InstallPrompts();
+  // The log on the drive every 2 s: the PS5 ends the game without flushing it, and whatever the
+  // last minutes logged (the controller, the cheats, the button pictures) was lost.
+  std::thread([] {
+    for (;;) {
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      rex::FlushLogging();
+    }
+  }).detach();
 #if SR_GAME == 2
   // BUTTON PROMPTS PlayStation: the text's button pictures ([image:ui_ctrl_360_btn_a]) come from
   // platform_<name>_us.be_strings, <name> the "Xbox360" at 820984B8 ("platform_%s"). The disc has
