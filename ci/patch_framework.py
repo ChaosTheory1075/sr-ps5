@@ -1132,6 +1132,24 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "        fetch[3] = (fetch[3] & ~(UINT32_C(0x3F) << 13)) | ((uint32_t(exp_adjust) & 0x3F) << 13);\n"
          "      }\n")
 
+    # Rumble, in the log: the first 10 times the controller is sent a non-zero rumble (the game's
+    # own or the added pulses), then every 500th, with the motors and scePadSetVibration's result.
+    edit(sdk / "src" / "input" / "ps5" / "ps5_input_driver.cpp",
+         "#include <algorithm>\n#include <chrono>\n",
+         "#include <algorithm>\n#include <atomic>  // [sr]\n#include <chrono>\n")
+    edit(sdk / "src" / "input" / "ps5" / "ps5_input_driver.cpp",
+         "  scePadSetVibration(pad.handle, &param);\n  pad.sent_large = param.large_motor;\n",
+         "  const int sr_vib = scePadSetVibration(pad.handle, &param);\n"
+         "  if (param.large_motor || param.small_motor) {  // [sr] rumble in the log\n"
+         "    static std::atomic<uint32_t> sr_rumbles{0};\n"
+         "    const uint32_t n = sr_rumbles.fetch_add(1) + 1;\n"
+         "    if (n <= 10 || n % 500 == 0)\n"
+         "      REXLOG_INFO(\"PS5 input: rumble #{} sent: large {} small {} (game {:04X}/{:04X}, pulse {:04X}/{:04X}), result {:#x}\", n,\n"
+         "                  param.large_motor, param.small_motor, pad.native_low, pad.native_high, pad.pulse_low,\n"
+         "                  pad.pulse_high, uint32_t(sr_vib));\n"
+         "  }\n"
+         "  pad.sent_large = param.large_motor;\n")
+
     # Every deferred overlapped call (XamContentCreate ...) slept a fixed 100 ms on the host task
     # thread before it completed. Saints Row mounts its 5 DLC packages one after another while
     # the main thread waits on the loader thread: a 502 ms hitch (sr1_038, 12:22:45). The call

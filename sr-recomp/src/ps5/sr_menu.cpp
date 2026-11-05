@@ -169,6 +169,7 @@ struct Settings {
   bool dualsense = true;   // the light bar and R2 (gta4_sony_enabled: sr_dualsense.h)
   bool ps_prompts = true;  // PlayStation button prompts (sr_ps_prompts: sr_prompts.h)
   bool skip_intro = true;  // the THQ and Volition logo movies (sr_skip_intro: sr_intro.cpp)
+  bool trees = false;      // Saints Row's high-detail trees at any distance (sr_tree_detail: sr_app.cpp)
   int language = 0;  // LANGUAGE: 0 AUTO (the PS5's own: SystemLanguage), or the Xbox 360's language ID: kLanguages
 
   struct Language {
@@ -224,6 +225,8 @@ struct Settings {
     s.filter = 5, s.lane = true, s.fps = 1, s.dualsense = true, s.ps_prompts = true, s.skip_intro = true;
     s.fps60 = true, s.language = 0;
     s.music = now.music, s.game = now.game;
+    s.cheat_menu = now.cheat_menu;  // (a choice, not a setting to put back: SQUARE leaves it)
+    s.trees = now.trees;
     return s;
   }
 
@@ -254,6 +257,7 @@ struct Settings {
         if (k == "dualsense") s.dualsense = value != 0;
         if (k == "ps_prompts") s.ps_prompts = value != 0;
         if (k == "skip_intro") s.skip_intro = value != 0;
+        if (k == "tree_detail") s.trees = value != 0;
         if (k == "language") s.language = kLanguages[LanguageIndex(value)].id;
       }
       std::fclose(f);
@@ -267,9 +271,9 @@ struct Settings {
                    "anti_aliasing = %d\nupscaling_fsr = %d\nfsr_sharpness = %d\nrenderer_fast = %d\ncheat_menu = %d\n"
                    "dualsense_strength = %d\n"
                    "texture_filtering = %d\ngpu_lane = %d\nmenu_music = %d\ngame = %d\nfps_counter = %d\n"
-                   "dualsense = %d\nps_prompts = %d\nskip_intro = %d\nframe_rate = %d\nlanguage = %d\n",
+                   "dualsense = %d\nps_prompts = %d\nskip_intro = %d\nframe_rate = %d\nlanguage = %d\ntree_detail = %d\n",
                    aa, fsr ? 1 : 0, sharpness, host_rts ? 1 : 0, cheat_menu ? 1 : 0, dualsense_strength, filter, lane ? 1 : 0, music, game, fps, dualsense ? 1 : 0, ps_prompts ? 1 : 0,
-                   skip_intro ? 1 : 0, fps60 ? 60 : 30, language);
+                   skip_intro ? 1 : 0, fps60 ? 60 : 30, language, trees ? 1 : 0);
       std::fclose(f);
     }
   }
@@ -303,6 +307,7 @@ struct Settings {
     rex::input::sony::SetFeaturesEnabled(dualsense);
     rex::cvar::SetFlagByName("sr_ps_prompts", ps_prompts ? "true" : "false");
     rex::cvar::SetFlagByName("sr_skip_intro", skip_intro ? "true" : "false");
+    rex::cvar::SetFlagByName("sr_tree_detail", trees ? "true" : "false");
     // (the games' text follows XGetLanguage. Portuguese, which no disc has: the game is told a
     // language it has and reads the Portuguese text in its place when this build has it -
     // sr_prompts.cpp's ptbr<N>.bin, sr_ptbr - English otherwise. The carrier: Saints Row's Spanish,
@@ -316,10 +321,10 @@ struct Settings {
     rex::cvar::SetFlagByName("user_language",
                              std::to_string(pt_text ? carrier : lang.id == kPortuguese || (SR_GAME == 1 && !lang.p1) ? 1 : lang.id));
     REXLOG_INFO("SAINTS ROW: ReInstated menu: frame rate {}, upscaling {} (sharpness {}), anti-aliasing {}, texture filtering {}, the GPU's second lane {}, "
-                "frame rate counter {}, DualSense features {}, button prompts {}, skip intro {}, cheat menu {}, renderer {}, "
+                "frame rate counter {}, DualSense features {}, button prompts {}, skip intro {}, tree detail {}, cheat menu {}, renderer {}, "
                 "language {}",
                 fps60 ? 60 : 30, fsr ? "FSR 1" : "bilinear", kSharpnessNames[sharpness], kAaNames[aa], kFilterNames[filter], lane ? "on" : "off", kFpsModes[fps],
-                dualsense ? "on" : "off", ps_prompts ? "PlayStation" : "Xbox", skip_intro ? "on" : "off", cheat_menu ? "on" : "off", host_rts ? "FAST" : "ACCURATE",
+                dualsense ? "on" : "off", ps_prompts ? "PlayStation" : "Xbox", skip_intro ? "on" : "off", trees ? "high" : "as on the disc", cheat_menu ? "on" : "off", host_rts ? "FAST" : "ACCURATE",
                 lang.name);
   }
 };
@@ -424,7 +429,7 @@ const char* PageName(int page) {
 // The settings page's rows, in its order (a new option: a row here, its line
 // in SettingsLines and its change in ChangeSetting).
 enum SettingsRow {
-  kFrameRate, kUpscaling, kSharpness, kAntiAliasing, kFiltering, kLane, kFps, kPrompts, kDualSense, kLanguage, kSkipIntro, kCheatMenu, kDualSenseStrength, kRenderer, kMusic, kSettingsRows
+  kFrameRate, kUpscaling, kSharpness, kAntiAliasing, kFiltering, kLane, kFps, kTrees, kPrompts, kDualSense, kLanguage, kSkipIntro, kCheatMenu, kDualSenseStrength, kRenderer, kMusic, kSettingsRows
 };
 
 class MenuDialog final : public rex::ui::ImGuiDialog {
@@ -715,6 +720,9 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       sets_[g].game = last.game, sets_[g].music = last.music;
     }
     sets_[last.game] = last;
+    // (CHEAT MENU is one switch for both games: on in either game's settings, it's on for both.
+    // It was each game's own, and turning it on in Saints Row 2's settings left Saints Row's off.)
+    sets_[1].cheat_menu = sets_[2].cheat_menu = sets_[1].cheat_menu || sets_[2].cheat_menu;
   }
 
   // At PLAY: each game's file, and menu.ini as the game starting reads it (Saints Row 2's own program
@@ -788,6 +796,13 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
                    "and the frame time; detailed adds the slowest frames and a graph of the last few seconds.", "Um contador de quadros na borda esquerda da tela enquanto você joga. Simples mostra quadros por "
                      "segundo e o tempo de quadro; detalhado acrescenta os quadros mais lentos e um gráfico dos últimos "
                      "segundos.")};
+    lines[kTrees] = {T("GRAPHICS", "GRÁFICOS"), T("TREE DETAIL", "DETALHE DAS ÁRVORES"),
+                     set_game_ != 1 ? T("SAINTS ROW ONLY", "SÓ SAINTS ROW") : s.trees ? T("HIGH", "ALTO") : T("AS ON THE DISC", "COMO NO DISCO"),
+                     set_game_ == 1,
+                     T("Saints Row: the trees always drawn with their high-detail models, never the far-away ones "
+                     "(Xenia's \"Tree LODs\" patch). Costs a little speed in busy streets.",
+                     "Saints Row: as árvores sempre com os modelos detalhados, nunca os de longe (o patch \"Tree LODs\" "
+                     "do Xenia). Custa um pouco de velocidade nas ruas cheias.")};
     lines[kPrompts] = {T("CONTROLLER", "CONTROLE"), T("BUTTON PROMPTS", "ÍCONES DOS BOTÕES"), s.ps_prompts ? "PLAYSTATION" : "XBOX", true,
                        T("The buttons the games show you - in hints, menus and moves - as the DualSense's (cross, "
                        "circle, square, triangle, L1, R1...) or as the Xbox 360's.", "Os botões que os jogos mostram - em dicas, menus e golpes - como os do DualSense (xis, círculo, "
@@ -872,8 +887,12 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       case kSkipIntro:
         if (flip) s.skip_intro = !s.skip_intro;
         break;
+      case kTrees:
+        if (flip && set_game_ == 1) s.trees = !s.trees;
+        break;
       case kCheatMenu:
         if (flip) s.cheat_menu = !s.cheat_menu;
+        sets_[1].cheat_menu = sets_[2].cheat_menu = s.cheat_menu;  // (the same for both games)
         break;
       case kDualSenseStrength:
         if (!s.dualsense) break;

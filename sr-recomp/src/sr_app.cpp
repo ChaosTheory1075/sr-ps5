@@ -40,6 +40,8 @@ namespace fs = std::filesystem;
 REXCVAR_DECLARE(std::string, present_effect);  // (the presenter's, ui/presenter.cpp)
 REXCVAR_DECLARE(double, present_fsr_sharpness_reduction);
 REXCVAR_DECLARE(bool, sr_ps_prompts);  // (ps5/sr_prompts.cpp)
+REXCVAR_DEFINE_BOOL(sr_tree_detail, false, "SAINTS ROW",
+                    "Saints Row: the trees always drawn with their high-detail models (Xenia's Tree LODs patch)");
 
 namespace {
 
@@ -197,6 +199,20 @@ void SrApp::OnPostLaunchModule(rex::system::XThread* thread) {
       rex::FlushLogging();
     }
   }).detach();
+#if SR_GAME == 1
+  // TREE DETAIL HIGH: Xenia's "Tree LODs" patch for TU1 (545107D1, Tervel): the float at 827CC500,
+  // the distance factor for the trees' far models (1.3 on the disc), set to -1: always the near ones.
+  if (auto* kernel = REX_KERNEL_STATE(); kernel && REXCVAR_GET(sr_tree_detail)) {
+    uint8_t* f = kernel->memory()->TranslateVirtual<uint8_t*>(0x827CC500);
+    static constexpr uint8_t kDisc[4] = {0x3F, 0xA6, 0x66, 0x66}, kAlways[4] = {0xBF, 0x80, 0x00, 0x00};
+    if (f && std::memcmp(f, kDisc, 4) == 0) {
+      std::memcpy(f, kAlways, 4);
+      REXLOG_INFO("Saints Row: TREE DETAIL high (827CC500 1.3 -> -1.0)");
+    } else {
+      REXLOG_WARN("Saints Row: TREE DETAIL: 827CC500 isn't the disc's 1.3 (not TU1?): left as it is");
+    }
+  }
+#endif
 #if SR_GAME == 2
   // BUTTON PROMPTS PlayStation: the text's button pictures ([image:ui_ctrl_360_btn_a]) come from
   // platform_<name>_us.be_strings, <name> the "Xbox360" at 820984B8 ("platform_%s"). The disc has
@@ -209,6 +225,15 @@ void SrApp::OnPostLaunchModule(rex::system::XThread* thread) {
       REXLOG_INFO("Saints Row 2: platform strings platform_ps3 (PlayStation button prompts in text)");
     } else {
       REXLOG_WARN("Saints Row 2: no \"Xbox360\" at 820984B8: the text keeps the Xbox 360's buttons");
+    }
+    // (and the "XBOX360" at 82097240, the scripts' own platform name, as Xenia's "PS3 Button
+    // Prompts" patch for TU3 swaps both: the Lua's hard-coded buttons follow it)
+    char* lua_name = kernel->memory()->TranslateVirtual<char*>(0x82097240);
+    if (lua_name && std::memcmp(lua_name, "XBOX360", 8) == 0) {
+      std::memcpy(lua_name, "PS3\0\0\0\0", 8);
+      REXLOG_INFO("Saints Row 2: script platform name PS3 (PlayStation button prompts in the scripts)");
+    } else {
+      REXLOG_WARN("Saints Row 2: no \"XBOX360\" at 82097240: the scripts keep the Xbox 360's buttons");
     }
   }
 #endif
