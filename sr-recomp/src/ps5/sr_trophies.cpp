@@ -1,5 +1,6 @@
 // Saints Row PS5 - trophies (see sr_trophies.h; from gta4-ps5's hub_trophies.cpp).
 #include "sr_trophies.h"
+#include "sr_text.h"
 
 #include <algorithm>
 #include <cmath>
@@ -352,11 +353,11 @@ void DrawCard(ImDrawList* dl, ImVec2 display, const Card& card, float age, ImFon
   const float tx = i1.x + 20 * k, tw = p1.x - 22 * k - tx;
   DrawCup(dl, ImVec2(tx + 8 * k, p0.y + 27 * k), 20 * k, card.grade, alpha);
   Spaced(dl, bold, 15 * k, ImVec2(tx + 24 * k, p0.y + 18 * k), WhiteA(0.62f * alpha),
-         card.platinum ? "PLATINUM TROPHY" : "TROPHY EARNED", 1.8f * k);
+         card.platinum ? T("PLATINUM TROPHY", "TROFÉU DE PLATINA") : T("TROPHY EARNED", "TROFÉU CONQUISTADO"), 1.8f * k);
   dl->AddText(bold, 25 * k, ImVec2(tx, p0.y + 40 * k), WhiteA(alpha), FitText(bold, 25 * k, card.name, tw).c_str());
   const char* game = SR_GAME == 2 ? "Saints Row 2" : "Saints Row";
-  const std::string sub = card.platinum ? std::string("Every ") + game + " trophy"
-                                        : std::string(GradeName(card.grade)) + "  \xC2\xB7  " + game;
+  const std::string sub = card.platinum ? std::string(T("Every ", "Todos os troféus de ")) + game + T(" trophy", "")
+                                        : std::string(TW(GradeName(card.grade))) + "  \xC2\xB7  " + game;
   dl->AddText(body, 17 * k, ImVec2(tx, p0.y + 74 * k), GradeColor(card.grade, 0.9f * alpha),
               FitText(body, 17 * k, sub, tw).c_str());
 }

@@ -18,6 +18,7 @@
 
 #include "sr_trophies.h"
 #include "sr_menu.h"
+#include "sr_text.h"
 #include "game/sound.h"
 #include "hub/hub_sfx.h"
 
@@ -145,7 +146,7 @@ void TrophyPopup::OnDraw(ImGuiIO& io) {
   trophies::Card view;
   view.platinum = card.platinum;
   view.grade = card.platinum ? trophies::Grade::kPlatinum : trophies::GradeFor(card.achievement.gamerscore);
-  view.name = card.platinum ? "SAINTS ROW: ReInstated Platinum" : card.achievement.label;
+  view.name = card.platinum ? T("SAINTS ROW: ReInstated Platinum", "Platina de SAINTS ROW: ReInstated") : card.achievement.label;
   view.picture = reinterpret_cast<ImTextureID>(card.platinum ? TitlePicture() : icons_.GetIcon(card.achievement));
   ImFont* body = MenuBodyFont();
   ImFont* bold = MenuItemFont();

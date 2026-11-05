@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <strings.h>
 #include <vector>
@@ -30,6 +31,13 @@ REXCVAR_DECLARE(bool, sr_skip_intro);  // (sr_intro.cpp: Saints Row 2's logos ar
   extern "C" const unsigned char name[];                                              \
   extern "C" const unsigned char name##_end[];
 SR_INCBIN(srps5_prompts, SRPS5_PROMPTS_BIN)
+// ptbr<N>.bin (Downloads/Recomps/ptbr/sr/build<N>.py; empty without it): the games' text in
+// Brazilian Portuguese, in place of a language the disc has (Spanish), as patches of the archives.
+SR_INCBIN(srps5_ptbr, SRPS5_PTBR_BIN)
+
+REXCVAR_DEFINE_BOOL(sr_ptbr, false, "SAINTS ROW",
+                    "The game's text in Brazilian Portuguese (the menu's LANGUAGE): the game is told Spanish (Saints Row 2: German) "
+                    "and reads the Portuguese text in that language's place");
 
 namespace srps5 {
 namespace {
@@ -39,28 +47,76 @@ struct Patch {
   uint64_t offset;
   uint32_t size;
   const uint8_t* data;
-  uint32_t kind;  // 0 the button prompts, 1 SKIP INTRO (Saints Row 2's logos)
+  uint32_t kind;  // 0 the button prompts, 1 SKIP INTRO (Saints Row 2's logos), 2 the Portuguese text
+  uint8_t original[16];  // (kind 2: the archive's first 16 bytes there; patched only when they match)
 };
 std::vector<Patch> g_patches;  // (set before the hook is, then only read)
+std::unique_ptr<std::atomic<int8_t>[]> g_checked;  // (per patch: 0 not seen, 1 matched, -1 not this disc's)
 std::atomic<uint32_t> g_applied{0};
 
 // (whichever thread reads a game file, after the read)
 void OnFileRead(const std::string& name, size_t offset, uint8_t* data, size_t size) {
   if (!size) return;
-  const bool on[2] = {REXCVAR_GET(sr_ps_prompts), REXCVAR_GET(sr_skip_intro)};
-  if (!on[0] && !on[1]) return;
+  const bool on[3] = {REXCVAR_GET(sr_ps_prompts), REXCVAR_GET(sr_skip_intro), REXCVAR_GET(sr_ptbr)};
+  if (!on[0] && !on[1] && !on[2]) return;
   const uint64_t begin = offset, end = offset + size;
-  for (const Patch& p : g_patches) {
+  for (size_t i = 0; i < g_patches.size(); ++i) {
+    const Patch& p = g_patches[i];
     if (p.offset >= end || p.offset + p.size <= begin || !on[p.kind]) continue;
     if (strcasecmp(p.archive, name.c_str()) != 0) continue;
+    if (p.kind == 2) {
+      // (the text's packed bytes, made from one disc's archive: only over the same bytes)
+      if (begin <= p.offset && p.offset + 16 <= end) {
+        const bool same = std::memcmp(data + (p.offset - begin), p.original, 16) == 0;
+        if (g_checked[i].exchange(same ? 1 : -1) != (same ? 1 : -1) && !same)
+          REXLOG_WARN("SAINTS ROW: ReInstated: {} at {:X} isn't the disc's the Portuguese text was made from: "
+                      "left as it is", name, p.offset);
+      }
+      if (g_checked[i].load() != 1) continue;
+    }
     const uint64_t from = std::max(begin, p.offset), to = std::min(end, p.offset + p.size);
     std::memcpy(data + (from - begin), p.data + (from - p.offset), size_t(to - from));
     const uint32_t count = g_applied.fetch_add(1) + 1;
     if (count <= 40) {
       REXLOG_INFO("SAINTS ROW: ReInstated: {} in {} at {:X} ({} bytes), {} so far",
-                  p.kind ? "SKIP INTRO" : "PlayStation buttons", name, from, to - from, count);
+                  p.kind == 2 ? "Portuguese text" : p.kind ? "SKIP INTRO" : "PlayStation buttons", name, from,
+                  to - from, count);
     }
   }
+}
+
+// ptbr<N>.bin ("PTBR", count, then {archive[32], offset, size, data offset, kind 2, original[16]}).
+size_t AddPortuguese() {
+  const uint8_t* blob = srps5_ptbr;
+  const size_t blob_size = size_t(srps5_ptbr_end - srps5_ptbr);
+  uint32_t count = 0;
+  if (blob_size < 8 || std::memcmp(blob, "PTBR", 4) != 0) return 0;
+  std::memcpy(&count, blob + 4, 4);
+  if (8 + size_t(count) * 64 > blob_size) return 0;
+  size_t added = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t* e = blob + 8 + i * 64;
+    Patch p{};
+    std::memcpy(p.archive, e, 31);
+    uint32_t offset, size, at;
+    std::memcpy(&offset, e + 32, 4);
+    std::memcpy(&size, e + 36, 4);
+    std::memcpy(&at, e + 40, 4);
+    std::memcpy(&p.kind, e + 44, 4);
+    std::memcpy(p.original, e + 48, 16);
+    if (size_t(at) + size > blob_size || p.kind != 2 || size < 16) continue;
+    p.offset = offset;
+    p.size = size;
+    p.data = blob + at;
+    g_patches.push_back(p);
+    ++added;
+  }
+  return added;
+}
+
+void StartFileHook() {
+  g_checked = std::make_unique<std::atomic<int8_t>[]>(g_patches.size() + 1);
+  rex::filesystem::g_sr_file_read_hook.store(&OnFileRead);
 }
 
 // ---- Saints Row: its button pictures replaced as the GPU loads them ----
@@ -83,10 +139,10 @@ uint64_t Fnv1a64(const uint8_t* p, size_t n) {
 
 bool OnTextureLoad(uint32_t physical, uint32_t size, uint32_t format) {
   if (!REXCVAR_GET(sr_ps_prompts)) return false;
-  // (diagnostics: the small DXT5 textures (xenos k_DXT4_5, 20) the GPU loads, with their
+  // (diagnostics: the small DXT3 / DXT5 textures (xenos k_DXT2_3 19, k_DXT4_5 20) the GPU loads, with their
   // fingerprints, the first 300)
   static std::atomic<int> seen{0};
-  if (format == 20 && size <= 0x4000 && seen.load() < 300) {
+  if ((format == 19 || format == 20) && size <= 0x4000 && seen.load() < 300) {
     if (auto* k = REX_KERNEL_STATE(); k && k->memory()) {
       if (const uint8_t* g = k->memory()->TranslatePhysical<const uint8_t*>(physical); g && seen.fetch_add(1) < 300)
         REXLOG_INFO("SAINTS ROW: ReInstated: texture {:08X} format {} size {:X} fnv {:016X} first {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
@@ -136,17 +192,30 @@ bool InstallTexturePrompts(const uint8_t* blob, size_t blob_size) {
 
 }  // namespace
 
+bool HasPortuguese() {
+  const size_t blob_size = size_t(srps5_ptbr_end - srps5_ptbr);
+  return blob_size > 8 && std::memcmp(srps5_ptbr, "PTBR", 4) == 0;
+}
+
 void InstallPrompts() {
   static std::atomic<bool> installed{false};
   if (installed.exchange(true)) return;
+  const size_t text = AddPortuguese();
+  if (text)
+    REXLOG_INFO("SAINTS ROW: ReInstated: Brazilian Portuguese text, {} pieces of the game's files ({})", text,
+                REXCVAR_GET(sr_ptbr) ? SR_GAME == 2 ? "on: the game is told German" : "on: the game is told Spanish" : "off");
   const uint8_t* blob = srps5_prompts;
   const size_t blob_size = size_t(srps5_prompts_end - srps5_prompts);
-  if (InstallTexturePrompts(blob, blob_size)) return;
+  if (InstallTexturePrompts(blob, blob_size)) {
+    if (text) StartFileHook();
+    return;
+  }
   uint32_t count = 0;
   if (blob_size < 8 || std::memcmp(blob, "PRPF", 4) != 0 ||
       (std::memcpy(&count, blob + 4, 4), 8 + size_t(count) * 48 > blob_size)) {
     // (Saints Row 2 needs none: its own PS3 pictures, through get_platform - sr_app.cpp)
     if (SR_GAME == 1) REXLOG_WARN("SAINTS ROW: ReInstated: no PlayStation button prompts in this build (Xbox 360's shown)");
+    if (text) StartFileHook();
     return;
   }
   for (uint32_t i = 0; i < count; ++i) {
@@ -164,7 +233,7 @@ void InstallPrompts() {
     p.data = blob + at;
     g_patches.push_back(p);
   }
-  rex::filesystem::g_sr_file_read_hook.store(&OnFileRead);
+  StartFileHook();
   REXLOG_INFO("SAINTS ROW: ReInstated: PlayStation button prompts, {} pieces of the game's files ({})",
               g_patches.size(), REXCVAR_GET(sr_ps_prompts) ? "on" : "off: the Xbox 360's");
 }

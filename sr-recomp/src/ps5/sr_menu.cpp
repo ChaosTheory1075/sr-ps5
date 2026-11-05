@@ -31,6 +31,8 @@
 #include "game/sound.h"
 #include "imgui.h"
 #include "sr_install.h"
+#include "sr_prompts.h"
+#include "sr_text.h"
 #include "sr_trophies.h"
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -59,6 +61,8 @@ SR_INCBIN(srps5_font_title, SRPS5_FONTS_DIR "/oswald-latin-700-normal.ttf")
 SR_INCBIN(srps5_font_item, SRPS5_FONTS_DIR "/oswald-latin-600-normal.ttf")
 SR_INCBIN(srps5_font_body, SRPS5_FONTS_DIR "/inter-latin-400-normal.ttf")
 
+extern "C" int sceSystemServiceParamGetInt(int param_id, int* value);
+
 namespace srps5 {
 namespace {
 
@@ -76,13 +80,15 @@ std::vector<std::unique_ptr<rex::ui::ImmediateTexture>>* g_textures =
 // ---- the pad ----
 
 enum : uint32_t {
-  kUp = 1, kDown = 2, kLeft = 4, kRight = 8, kCross = 16, kCircle = 32, kL1 = 64, kR1 = 128, kTriangle = 256
+  kUp = 1, kDown = 2, kLeft = 4, kRight = 8, kCross = 16, kCircle = 32, kL1 = 64, kR1 = 128, kTriangle = 256,
+  kSquare = 512
 };
 constexpr const char* kGameTitles[3] = {"", "SAINTS ROW", "SAINTS ROW 2"};
 
 constexpr uint32_t kPadUp = 0x00000010u, kPadRight = 0x00000020u, kPadDown = 0x00000040u,
                    kPadLeft = 0x00000080u, kPadL1 = 0x00000400u, kPadR1 = 0x00000800u,
-                   kPadTriangle = 0x00001000u, kPadCircle = 0x00002000u, kPadCross = 0x00004000u;
+                   kPadTriangle = 0x00001000u, kPadCircle = 0x00002000u, kPadCross = 0x00004000u,
+                   kPadSquare = 0x00008000u;
 struct PadData {
   uint32_t buttons;
   uint8_t lx, ly, rx, ry, l2, r2;
@@ -115,6 +121,7 @@ class Pad {
     if (d.buttons & kPadCross) b |= kCross;
     if (d.buttons & kPadCircle) b |= kCircle;
     if (d.buttons & kPadTriangle) b |= kTriangle;
+    if (d.buttons & kPadSquare) b |= kSquare;
     if (d.buttons & kPadL1) b |= kL1;
     if (d.buttons & kPadR1) b |= kR1;
     uint32_t pressed = b & ~last_;
@@ -163,15 +170,40 @@ struct Settings {
   bool ps_prompts = true;  // PlayStation button prompts (sr_ps_prompts: sr_prompts.h)
   bool skip_intro = true;  // the THQ and Volition logo movies (sr_skip_intro: sr_intro.cpp)
   bool radnet = true;      // (Prototype 2's Radnet setting, kept in menu.ini: not used here)
-  int language = 1;        // the Xbox 360's language ID (user_language, XGetLanguage): kLanguages
+  int language = 0;  // LANGUAGE: 0 AUTO (the PS5's own: SystemLanguage), or the Xbox 360's language ID: kLanguages
 
   struct Language {
     int id;
     const char* name;
     bool p1;  // (on Saints Row's disc too: English, French, Spanish, Italian)
   };
-  static constexpr Language kLanguages[] = {{1, "ENGLISH", true}, {4, "FRENCH", true}, {3, "GERMAN", true},
-                                            {6, "ITALIAN", true}, {5, "SPANISH", true}};
+  static constexpr Language kLanguages[] = {{0, "AUTO", true}, {1, "ENGLISH", true}, {4, "FRENCH", true}, {3, "GERMAN", true},
+                                            {6, "ITALIAN", true}, {5, "SPANISH", true}, {9, "PORTUGUESE (BR)", false}};
+  static constexpr int kPortuguese = 9;  // (the Xbox 360's number for it; no disc here has it)
+  // AUTO: the PS5's own language as the Xbox 360 numbers it, when the games have it (kLanguages);
+  // English otherwise. (Asked once: the PS5's language doesn't change while the app runs.)
+  static int SystemLanguage() {
+    static const int id = [] {
+      int v = 1;
+      if (sceSystemServiceParamGetInt(1 /* SCE_SYSTEM_SERVICE_PARAM_ID_LANG */, &v) != 0) v = 1;
+      switch (v) {
+        case 2: case 22: return 4;            // French, French (Canada)
+        case 3: case 20: return 5;            // Spanish, Spanish (Latin America)
+        case 4: return 3;                     // German
+        case 5: return 6;                     // Italian
+        case 7: case 17: return kPortuguese;  // Portuguese, Portuguese (Brazil)
+        case 16: return 11;                   // Polish
+        case 8: return 12;                    // Russian
+        default: return 1;
+      }
+    }();
+    for (const auto& l : kLanguages)
+      if (l.id == id && id) return id;
+    return 1;
+  }
+  // The language in use: the one chosen, or the PS5's for AUTO.
+  int Effective() const { return language ? language : SystemLanguage(); }
+
   static int LanguageIndex(int id) {
     for (int i = 0; i < int(std::size(kLanguages)); ++i)
       if (kLanguages[i].id == id) return i;
@@ -185,9 +217,22 @@ struct Settings {
   static constexpr const char* kSharpnessStops[] = {"", "1.0", "0.5", "0.2"};
   static constexpr const char* kFpsModes[] = {"off", "simple", "detailed"};
 
-  static Settings Load(const fs::path& app) {
+  // The recommended settings (SQUARE on SETTINGS): the user's own, tested (2026-11-03), the same for
+  // both games. The menu's song level and the chosen game stay as they are.
+  static Settings Recommended(const Settings& now) {
     Settings s;
-    if (std::FILE* f = std::fopen((app / "menu.ini").string().c_str(), "rb")) {
+    s.aa = 2, s.fsr = true, s.sharpness = 3, s.host_rts = false, s.cheat_menu = false, s.dualsense_strength = 3;
+    s.filter = 5, s.lane = true, s.fps = 1, s.dualsense = true, s.ps_prompts = true, s.skip_intro = true;
+    s.radnet = true, s.fps60 = true, s.language = 0;
+    s.music = now.music, s.game = now.game;
+    return s;
+  }
+
+  // menu.ini (the last started game's: the game reads it when it starts, and its quick menu writes it),
+  // or a game's own, menu1.ini / menu2.ini.
+  static Settings Load(const fs::path& app, const char* file = "menu.ini") {
+    Settings s;
+    if (std::FILE* f = std::fopen((app / file).string().c_str(), "rb")) {
       char line[256];
       while (std::fgets(line, sizeof(line), f)) {
         char key[64] = {};
@@ -218,8 +263,8 @@ struct Settings {
     return s;
   }
 
-  void Save(const fs::path& app) const {
-    if (std::FILE* f = std::fopen((app / "menu.ini").string().c_str(), "wb")) {
+  void Save(const fs::path& app, const char* file = "menu.ini") const {
+    if (std::FILE* f = std::fopen((app / file).string().c_str(), "wb")) {
       std::fprintf(f,
                    "anti_aliasing = %d\nupscaling_fsr = %d\nfsr_sharpness = %d\nrenderer_fast = %d\ncheat_menu = %d\n"
                    "dualsense_strength = %d\n"
@@ -260,15 +305,24 @@ struct Settings {
     rex::input::sony::SetFeaturesEnabled(dualsense);
     rex::cvar::SetFlagByName("sr_ps_prompts", ps_prompts ? "true" : "false");
     rex::cvar::SetFlagByName("sr_skip_intro", skip_intro ? "true" : "false");
-    // (the games' text follows XGetLanguage; one Saints Row's disc hasn't: English there)
-    const Language& lang = kLanguages[LanguageIndex(language)];
-    rex::cvar::SetFlagByName("user_language", std::to_string(SR_GAME == 1 && !lang.p1 ? 1 : lang.id));
+    // (the games' text follows XGetLanguage. Portuguese, which no disc has: the game is told a
+    // language it has and reads the Portuguese text in its place when this build has it -
+    // sr_prompts.cpp's ptbr<N>.bin, sr_ptbr - English otherwise. The carrier: Saints Row's Spanish,
+    // Saints Row 2's German, whose text files are the biggest (its Spanish subtitles are smaller
+    // than the English); German there only changes one picture on the activity completion screen.)
+    const Language& lang = kLanguages[LanguageIndex(Effective())];
+    SetPortuguese(lang.id == kPortuguese);  // (the quick menu's and the trophy pop-up's text)
+    const bool pt_text = lang.id == kPortuguese && HasPortuguese();
+    rex::cvar::SetFlagByName("sr_ptbr", pt_text ? "true" : "false");
+    const int carrier = SR_GAME == 2 ? 3 : 5;
+    rex::cvar::SetFlagByName("user_language",
+                             std::to_string(pt_text ? carrier : lang.id == kPortuguese || (SR_GAME == 1 && !lang.p1) ? 1 : lang.id));
     REXLOG_INFO("SAINTS ROW: ReInstated menu: frame rate {}, upscaling {} (sharpness {}), anti-aliasing {}, texture filtering {}, the GPU's second lane {}, "
                 "frame rate counter {}, DualSense features {}, button prompts {}, skip intro {}, Radnet events {}, "
                 "language {}",
                 fps60 ? 60 : 30, fsr ? "FSR 1" : "bilinear", kSharpnessNames[sharpness], kAaNames[aa], kFilterNames[filter], lane ? "on" : "off", kFpsModes[fps],
                 dualsense ? "on" : "off", ps_prompts ? "PlayStation" : "Xbox", skip_intro ? "on" : "off",
-                radnet ? "unlocked" : "as on the disc", lang.name);
+                radnet ? "unlocked" : T("as on the disc", "como no disco"), lang.name);
   }
 };
 
@@ -298,31 +352,76 @@ std::string Fit(ImFont* f, float size, std::string s, float width) {
   return s + "...";
 }
 
+// strftime's, with %a and %b in Portuguese while the menu is (the PS5's libc only has the C locale's English).
 std::string Date(int64_t t, const char* format) {
   const std::time_t tt = std::time_t(t);
+  const std::tm* tm = std::localtime(&tt);
+  if (!tm) return {};
+  std::string f = format;
+  if (Portuguese()) {
+    static constexpr const char* kDays[] = {"dom", "seg", "ter", "qua", "qui", "sex", "sáb"};
+    static constexpr const char* kMonths[] = {"jan", "fev", "mar", "abr", "mai", "jun",
+                                              "jul", "ago", "set", "out", "nov", "dez"};
+    for (size_t at; (at = f.find("%a")) != std::string::npos;) f.replace(at, 2, kDays[tm->tm_wday % 7]);
+    for (size_t at; (at = f.find("%b")) != std::string::npos;) f.replace(at, 2, kMonths[tm->tm_mon % 12]);
+  }
   char out[64] = {};
-  if (const std::tm* tm = std::localtime(&tt)) std::strftime(out, sizeof(out), format, tm);
+  std::strftime(out, sizeof(out), f.c_str(), tm);
   return out;
 }
 
-std::string Upper(std::string s) {
-  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
-  return s;
-}
-
-// Letter-spaced text; returns its width.
+// Letter-spaced text, a whole UTF-8 letter at a time; returns its width.
 float Spaced(ImDrawList* dl, ImFont* f, float size, ImVec2 p, ImU32 col, const char* t, float spacing) {
   const float x0 = p.x;
-  for (const char* c = t; *c; ++c) {
-    dl->AddText(f, size, p, col, c, c + 1);
-    p.x += f->CalcTextSizeA(size, FLT_MAX, 0, c, c + 1).x + spacing;
+  for (const char* c = t; *c;) {
+    const char* next = c + 1;
+    while ((static_cast<unsigned char>(*next) & 0xC0) == 0x80) ++next;
+    dl->AddText(f, size, p, col, c, next);
+    p.x += f->CalcTextSizeA(size, FLT_MAX, 0, c, next).x + spacing;
+    c = next;
   }
   return p.x - x0 - spacing;
 }
 
+// The footer's button hints, with SQUARE and TRIANGLE (QUADRADO, TRIÂNGULO) drawn as the DualSense's
+// symbols, outlined like its buttons (X and O read as theirs already); returns the width (draw false:
+// measured only).
+float Hints(ImDrawList* dl, ImFont* f, float size, ImVec2 p, ImU32 col, const std::string& t, bool draw) {
+  static constexpr const char* kWords[] = {"SQUARE", "QUADRADO", "TRIANGLE", "TRIÂNGULO"};
+  const float x0 = p.x, icon = size * 0.66f, line = std::max(1.0f, size * 0.075f);
+  size_t i = 0;
+  while (i < t.size()) {
+    size_t at = std::string::npos;
+    int word = -1;
+    for (int k = 0; k < 4; ++k) {
+      const size_t a = t.find(kWords[k], i);
+      if (a < at) at = a, word = k;
+    }
+    const size_t end = at == std::string::npos ? t.size() : at;
+    if (end > i) {
+      if (draw) dl->AddText(f, size, p, col, t.c_str() + i, t.c_str() + end);
+      p.x += f->CalcTextSizeA(size, FLT_MAX, 0, t.c_str() + i, t.c_str() + end).x;
+    }
+    if (at == std::string::npos) break;
+    const float cy = p.y + size * 0.52f, h = icon * 0.5f;
+    if (draw && word < 2)
+      dl->AddRect(ImVec2(p.x + line, cy - h + line), ImVec2(p.x + icon - line, cy + h - line), col, 0, 0, line * 1.6f);
+    else if (draw)
+      dl->AddTriangle(ImVec2(p.x + icon * 0.5f, cy - h), ImVec2(p.x + icon, cy + h * 0.8f), ImVec2(p.x, cy + h * 0.8f),
+                      col, line * 1.6f);
+    p.x += icon;
+    i = at + std::char_traits<char>::length(kWords[word]);
+  }
+  return p.x - x0;
+}
+
 // The pages, in the tab bar's order.
 enum Page { kHome, kContent, kSaves, kSettings, kTrophies, kCredits, kPages };
-const char* const kPageNames[kPages] = {"HOME", "CONTENT", "SAVES", "SETTINGS", "TROPHIES", "CREDITS"};
+const char* PageName(int page) {
+  static constexpr const char* kEn[kPages] = {"HOME", "CONTENT", "SAVES", "SETTINGS", "TROPHIES", "CREDITS"};
+  static constexpr const char* kPt[kPages] = {"INÍCIO", "CONTEÚDO", "SAVES", "AJUSTES", "TROFÉUS", "CRÉDITOS"};
+  return (Portuguese() ? kPt : kEn)[page];
+}
 
 // The settings page's rows, in its order (a new option: a row here, its line
 // in SettingsLines and its change in ChangeSetting).
@@ -334,8 +433,8 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
  public:
   MenuDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate, const fs::path& app,
              std::function<void(MenuChoice)> play)
-      : ImGuiDialog(drawer), immediate_(immediate), app_(app), play_(std::move(play)),
-        settings_(Settings::Load(app)) {
+      : ImGuiDialog(drawer), immediate_(immediate), app_(app), play_(std::move(play)) {
+    LoadSettings();
     const fs::path hub = app / "hub";
     for (int g = 1; g <= 2; ++g) {
       const std::string n = std::to_string(g);
@@ -344,7 +443,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       logo_[g] = Load(hub / ("logo" + n + ".png"));
     }
     title_ = Load(hub / "title.png");
-    game_ = settings_.game;
+    game_ = set_game_ = sets_[1].game;
     shown_game_ = float(game_);
     std::error_code ec;
     // (an install the app was closed during: not to be taken for a finished one)
@@ -360,8 +459,8 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     ec.clear();
     Refresh();
     REXLOG_INFO("SAINTS ROW: ReInstated menu: Saints Row {}{}, Saints Row 2 {}{}, {} DLC packs, {} in install/",
-                installed_.game[1] ? "installed" : "MISSING", installed_.update[1] ? " (TU1)" : " (no TU1)",
-                installed_.game[2] ? "installed" : "MISSING", installed_.update[2] ? " (TU3)" : " (no TU3)",
+                installed_.game[1] ? "installed" : T("MISSING", "FALTANDO"), installed_.update[1] ? " (TU1)" : T(" (no TU1)", " (sem TU1)"),
+                installed_.game[2] ? "installed" : T("MISSING", "FALTANDO"), installed_.update[2] ? " (TU3)" : T(" (no TU3)", " (sem TU3)"),
                 installed_.dlc, sources_.size());
     StartMusic(game_);
     // (the runtime's user data: /app0/UserData/sr1 and sr2)
@@ -369,7 +468,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       user_data_[g] = app / "UserData" / (g == 2 ? "sr2" : "sr1");
       lists_[g] = trophies::Load(user_data_[g]);
       REXLOG_INFO("SAINTS ROW: ReInstated menu: {} trophies {} ({} of {} earned)", install::kGameNames[g],
-                  lists_[g].loaded ? "listed" : "not listed yet", lists_[g].earned, lists_[g].earnable);
+                  lists_[g].loaded ? "listed" : T("not listed yet", "ainda sem lista"), lists_[g].earned, lists_[g].earnable);
     }
     ShowTrophies(game_);
   }
@@ -380,16 +479,16 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     const float dt = std::min(io.DeltaTime, 0.1f);
     time_ += dt;
     pictures_this_frame_ = 0;
+    SetPortuguese(sets_[page_ == kSettings ? set_game_ : game_].Effective() == Settings::kPortuguese);
     HandlePad(pad_.Pressed());
     TickInstaller();
-    if (music_) music_->SetVolume(leaving_ ? 0.0f : settings_.music / 100.0f);
+    if (music_) music_->SetVolume(leaving_ ? 0.0f : sets_[1].music / 100.0f);
     tab_x_ += (tab_target_x_ - tab_x_) * std::min(1.0f, dt * 14.0f);
     tab_w_ += (tab_target_w_ - tab_w_) * std::min(1.0f, dt * 14.0f);
     page_in_ = std::min(1.0f, page_in_ + dt * 5.0f);
     Draw(io.DisplaySize, dt);
     if (leaving_ && (leave_t_ += dt) > 0.7f) {
-      settings_.game = game_;
-      settings_.Save(app_);
+      SaveSettings();
       if (game_ == 2) {
         // Saints Row 2 is its own program: started in this one's place (it applies menu.ini itself)
         REXLOG_INFO("SAINTS ROW: ReInstated menu: starting Saints Row 2 (sr2.bin)");
@@ -397,14 +496,14 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         char* args[] = {nullptr};
         const int rc = sceSystemServiceLoadExec("/app0/sr2.bin", args);
         REXLOG_ERROR("SAINTS ROW: ReInstated menu: starting sr2.bin failed ({:#x})", uint32_t(rc));
-        start_error_ = "Couldn't start Saints Row 2 (sr2.bin is missing from the app folder, or the PS5 refused it).";
+        start_error_ = T("Couldn't start Saints Row 2 (sr2.bin is missing from the app folder, or the PS5 refused it).", "Não deu para iniciar Saints Row 2 (falta o sr2.bin na pasta do app, ou o PS5 o recusou).");
         leaving_ = false;
         leave_t_ = 0;
         if (music_) StartMusic(game_);
         return;
       }
       done_ = true;
-      settings_.Apply();
+      sets_[game_].Apply();
       Close();
       play_(MenuChoice{1});
     }
@@ -513,6 +612,12 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     if (p & (kL1 | kR1)) {
       page_ = Page((page_ + ((p & kR1) ? 1 : kPages - 1)) % kPages);
       page_in_ = 0;
+      // (SETTINGS opens on the game list, at the game HOME has chosen)
+      if (page_ == kSettings) set_game_ = game_, in_list_ = false, confirm_key_ = -1;
+      return;
+    }
+    if ((p & kCircle) && page_ == kSettings && in_list_) {
+      in_list_ = false;  // (back to the game list first)
       return;
     }
     if ((p & kCircle) && page_ != kHome) {
@@ -566,6 +671,14 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         break;
       }
       case kSettings: {
+        // SQUARE, twice: the game's recommended settings back
+        if ((p & kSquare) && Confirmed(300 + set_game_)) ResetSettings();
+        if (!in_list_) {
+          // the game list: whose settings
+          if (p & (kUp | kDown)) set_game_ = set_game_ == 1 ? 2 : 1, confirm_key_ = -1;
+          if (p & (kRight | kCross)) in_list_ = true;
+          break;
+        }
         if (p & kUp) row_ = (row_ + kSettingsRows - 1) % kSettingsRows;
         if (p & kDown) row_ = (row_ + 1) % kSettingsRows;
         const int step = (p & kRight) ? 1 : (p & kLeft) ? -1 : 0;
@@ -593,6 +706,36 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
 
   // ---- the settings ----
 
+  // Each game's own: menu1.ini / menu2.ini, and menu.ini, the last started game's (newest: its quick
+  // menu writes there). Before there were per-game files, menu.ini was both games'.
+  void LoadSettings() {
+    const Settings last = Settings::Load(app_);
+    for (int g = 1; g <= 2; ++g) {
+      const std::string file = "menu" + std::to_string(g) + ".ini";
+      std::error_code ec;
+      sets_[g] = fs::exists(app_ / file, ec) ? Settings::Load(app_, file.c_str()) : last;
+      sets_[g].game = last.game, sets_[g].music = last.music;
+    }
+    sets_[last.game] = last;
+  }
+
+  // At PLAY: each game's file, and menu.ini as the game starting reads it (Saints Row 2's own program
+  // too: ApplySettings).
+  void SaveSettings() {
+    for (int g = 1; g <= 2; ++g) {
+      sets_[g].game = game_;
+      sets_[g].Save(app_, ("menu" + std::to_string(g) + ".ini").c_str());
+    }
+    sets_[game_].Save(app_);
+  }
+
+  // SQUARE (twice) on SETTINGS: the game's recommended settings back.
+  void ResetSettings() {
+    sets_[set_game_] = Settings::Recommended(sets_[set_game_]);
+    reset_t_ = time_;
+    REXLOG_INFO("SAINTS ROW: ReInstated menu: {}'s recommended settings put back", kGameTitles[set_game_]);
+  }
+
   struct SettingLine {
     const char* section;  // the heading it's under
     const char* label;
@@ -603,123 +746,150 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   };
 
   std::vector<SettingLine> SettingsLines() const {
+    const Settings& s = sets_[set_game_];
     char music[16];
-    std::snprintf(music, sizeof(music), "%d%%", settings_.music);
+    std::snprintf(music, sizeof(music), "%d%%", s.music);
     std::vector<SettingLine> lines(kSettingsRows);
-    lines[kFrameRate] = {"GRAPHICS", "FRAME RATE", settings_.fps60 ? "60 (EXPERIMENTAL)" : "30", true,
-                         "30 is the frame rate both games were made for on the Xbox 360. 60 lets them run twice as "
+    lines[kFrameRate] = {T("GRAPHICS", "GRÁFICOS"), T("FRAME RATE", "TAXA DE QUADROS"), s.fps60 ? "60 (EXPERIMENTAL)" : "30", true,
+                         T("30 is the frame rate both games were made for on the Xbox 360. 60 lets them run twice as "
                          "often - as their PC versions can - wherever the PS5 keeps up: busy scenes fall between "
-                         "the two. Experimental: if anything plays too fast or stutters, set it back to 30."};
-    lines[kUpscaling] = {"GRAPHICS", "UPSCALING", settings_.fsr ? "FSR 1" : "BILINEAR", true,
-                         "How the picture is enlarged to your TV's resolution (up to 4K). FSR 1, AMD's upscaler, keeps "
+                         "the two. Experimental: if anything plays too fast or stutters, set it back to 30.", "30 é a taxa de quadros para a qual os dois jogos foram feitos no Xbox 360. 60 os deixa rodar duas "
+                           "vezes mais - como as versões de PC podem - onde o PS5 acompanha: cenas pesadas ficam entre os dois. "
+                           "Experimental: se algo ficar rápido demais ou travando, volte para 30.")};
+    lines[kUpscaling] = {T("GRAPHICS", "GRÁFICOS"), T("UPSCALING", "AMPLIAÇÃO"), s.fsr ? "FSR 1" : "BILINEAR", true,
+                         T("How the picture is enlarged to your TV's resolution (up to 4K). FSR 1, AMD's upscaler, keeps "
                          "edges and detail sharp at almost no cost to the frame rate; BILINEAR is a plain, softer "
-                         "stretch."};
-    lines[kSharpness] = {"GRAPHICS", "SHARPNESS", settings_.fsr ? Settings::kSharpnessNames[settings_.sharpness] : "-",
-                         settings_.fsr,
-                         "How much FSR 1 sharpens the enlarged picture. HIGH is crispest but can make edges look "
-                         "harsh; LOW is gentler."};
-    lines[kAntiAliasing] = {"GRAPHICS", "ANTI-ALIASING", Settings::kAaNames[settings_.aa], true,
-                            "Smooths jagged edges before the picture is enlarged. SMAA finds edges by their shape and "
+                         "stretch.", "Como a imagem é ampliada para a resolução da sua TV (até 4K). O FSR 1, o ampliador da AMD, mantém "
+                           "bordas e detalhes nítidos quase sem custo para a taxa de quadros; BILINEAR é uma ampliação simples, "
+                           "mais suave.")};
+    lines[kSharpness] = {T("GRAPHICS", "GRÁFICOS"), T("SHARPNESS", "NITIDEZ"), s.fsr ? TW(Settings::kSharpnessNames[s.sharpness]) : "-",
+                         s.fsr,
+                         T("How much FSR 1 sharpens the enlarged picture. HIGH is crispest but can make edges look "
+                         "harsh; LOW is gentler.", "Quanto o FSR 1 deixa a imagem ampliada mais nítida. ALTA é a mais definida, mas pode deixar as "
+                           "bordas duras; BAIXA é mais suave.")};
+    lines[kAntiAliasing] = {T("GRAPHICS", "GRÁFICOS"), T("ANTI-ALIASING", "ANTISSERRILHAMENTO"), TW(Settings::kAaNames[s.aa]), true,
+                            T("Smooths jagged edges before the picture is enlarged. SMAA finds edges by their shape and "
                             "keeps the rest sharp; FXAA is a little cheaper but blurs fine detail. Both cost the "
-                            "PS5's GPU very little."};
-    lines[kFiltering] = {"GRAPHICS", "TEXTURE FILTERING",
-                         std::string(Settings::kFilterNames[settings_.filter]) + " ANISOTROPIC", true,
-                         "How sharp floors, walls and streets stay when seen at an angle. Higher is sharper; the PS5's "
-                         "GPU handles 16X easily."};
-    lines[kLane] = {"GRAPHICS", "GPU HELPER", settings_.lane ? "ON" : "OFF", true,
-                    "A second thread that takes part of the graphics work - copying the game's memory for the GPU and "
+                            "PS5's GPU very little.", "Suaviza bordas serrilhadas antes de a imagem ser ampliada. O SMAA encontra as bordas pela forma e "
+                              "mantém o resto nítido; o FXAA é um pouco mais leve, mas borra detalhes finos. Os dois custam muito "
+                              "pouco à GPU do PS5.")};
+    lines[kFiltering] = {T("GRAPHICS", "GRÁFICOS"), T("TEXTURE FILTERING", "FILTRO DE TEXTURAS"),
+                         std::string(Settings::kFilterNames[s.filter]) + T(" ANISOTROPIC", " ANISOTRÓPICO"), true,
+                         T("How sharp floors, walls and streets stay when seen at an angle. Higher is sharper; the PS5's "
+                         "GPU handles 16X easily.", "O quanto pisos, paredes e ruas continuam nítidos vistos de lado. Mais alto é mais nítido; a GPU do "
+                           "PS5 aguenta 16X com facilidade.")};
+    lines[kLane] = {"GRAPHICS", "GPU HELPER", s.lane ? T("ON", "LIGADO") : T("OFF", "DESLIGADO"), true,
+                    T("A second thread that takes part of the graphics work - copying the game's memory for the GPU and "
                     "writing its texture lists - off the thread that sets the frame rate. Turn it off if something "
-                    "draws wrong."};
+                    "draws wrong.", "Uma segunda thread que tira parte do trabalho gráfico - copiar a memória do jogo para a GPU e "
+                      "escrever as listas de texturas - da thread que define a taxa de quadros. Desligue se algo for "
+                      "desenhado errado.")};
     static constexpr const char* kFpsNames[] = {"OFF", "SIMPLE", "DETAILED"};
-    lines[kFps] = {"GRAPHICS", "FPS COUNTER", kFpsNames[settings_.fps], true,
-                   "A frame rate counter at the left edge of the screen while you play. Simple shows frames a second "
-                   "and the frame time; detailed adds the slowest frames and a graph of the last few seconds."};
-    lines[kPrompts] = {"CONTROLLER", "BUTTON PROMPTS", settings_.ps_prompts ? "PLAYSTATION" : "XBOX", true,
-                       "The buttons the games show you - in hints, menus and moves - as the DualSense's (cross, "
-                       "circle, square, triangle, L1, R1...) or as the Xbox 360's."};
-    lines[kDualSense] = {"CONTROLLER", "DUALSENSE FEATURES", settings_.dualsense ? "ON" : "OFF", true,
-                         "The light bar in the Saints' purple, dimming as you're hurt and blinking when you're close "
+    lines[kFps] = {T("GRAPHICS", "GRÁFICOS"), T("FPS COUNTER", "CONTADOR DE FPS"), TW(kFpsNames[s.fps]), true,
+                   T("A frame rate counter at the left edge of the screen while you play. Simple shows frames a second "
+                   "and the frame time; detailed adds the slowest frames and a graph of the last few seconds.", "Um contador de quadros na borda esquerda da tela enquanto você joga. Simples mostra quadros por "
+                     "segundo e o tempo de quadro; detalhado acrescenta os quadros mais lentos e um gráfico dos últimos "
+                     "segundos.")};
+    lines[kPrompts] = {T("CONTROLLER", "CONTROLE"), T("BUTTON PROMPTS", "ÍCONES DOS BOTÕES"), s.ps_prompts ? "PLAYSTATION" : "XBOX", true,
+                       T("The buttons the games show you - in hints, menus and moves - as the DualSense's (cross, "
+                       "circle, square, triangle, L1, R1...) or as the Xbox 360's.", "Os botões que os jogos mostram - em dicas, menus e golpes - como os do DualSense (xis, círculo, "
+                         "quadrado, triângulo, L1, R1...) ou como os do Xbox 360.")};
+    lines[kDualSense] = {"CONTROLLER", "DUALSENSE FEATURES", s.dualsense ? T("ON", "LIGADO") : T("OFF", "DESLIGADO"), true,
+                         T("The light bar in the Saints' purple, dimming as you're hurt and blinking when you're close "
                          "to death, and a pulse when you're hit. The games' own rumble plays either way. (In the game: "
-                         "L3 + R3 opens the quick menu, with the cheats.)"};
-    lines[kLanguage] = {"GAME", "LANGUAGE", Settings::kLanguages[Settings::LanguageIndex(settings_.language)].name,
+                         "L3 + R3 opens the quick menu, with the cheats.)", "A barra de luz no roxo dos Saints, escurecendo quando você se fere e piscando quando está perto da "
+                           "morte, e um pulso quando você é atingido. A vibração dos próprios jogos funciona de qualquer jeito. "
+                           "(No jogo: L3 + R3 abre o menu rápido, com as trapaças.)")};
+    lines[kLanguage] = {T("GAME", "JOGO"), T("LANGUAGE", "IDIOMA"), s.language ? std::string(TW(Settings::kLanguages[Settings::LanguageIndex(s.language)].name))
+                   : std::string("AUTO (") + TW(Settings::kLanguages[Settings::LanguageIndex(s.Effective())].name) + ")",
                         true,
-                        "The language of the games' text, menus and subtitles, as the Xbox 360's own language "
-                        "setting chooses it: the discs have English, French, German, Italian and Spanish."};
-    lines[kSkipIntro] = {"GAME", "SKIP INTRO", settings_.skip_intro ? "ON" : "OFF", true,
-                         "The games start straight at their title screens, without the THQ and Volition logo "
-                         "movies."};
-    lines[kCheatMenu] = {"GAME", "CHEAT MENU (L3 + R3)", settings_.cheat_menu ? "ON" : "OFF", true,
-                         "In the game, press both sticks in (L3 + R3) for the quick menu: the cheats, the FPS "
-                         "counter and the DualSense features. OFF: no quick menu, and no cheats."};
+                        T("The language of the games' text, menus and subtitles, as the Xbox 360's own language "
+                        "setting chooses it: the discs have English, French, German, Italian and Spanish. PORTUGUESE (BR) "
+                        "puts this menu and both games' text and subtitles in Brazilian Portuguese (this app's "
+                        "translation; the voices stay English).", "O idioma dos textos, menus e legendas dos jogos, como a configuração de idioma do próprio Xbox 360 "
+                          "o escolhe: os discos têm inglês, francês, alemão, italiano e espanhol. PORTUGUÊS (BR) deixa este "
+                          "menu e os textos e legendas dos dois jogos em português (tradução deste app; as vozes "
+                          "continuam em inglês).")};
+    lines[kSkipIntro] = {"GAME", "SKIP INTRO", s.skip_intro ? T("ON", "LIGADO") : T("OFF", "DESLIGADO"), true,
+                         T("The games start straight at their title screens, without the THQ and Volition logo "
+                         "movies.", "Os jogos começam direto nas telas de título, sem os vídeos de logo da THQ e da Volition.")};
+    lines[kCheatMenu] = {"GAME", "CHEAT MENU (L3 + R3)", s.cheat_menu ? T("ON", "LIGADO") : T("OFF", "DESLIGADO"), true,
+                         T("In the game, press both sticks in (L3 + R3) for the quick menu: the cheats, the FPS "
+                         "counter and the DualSense features. OFF: no quick menu, and no cheats.", "No jogo, aperte os dois analógicos (L3 + R3) para o menu rápido: as trapaças, o contador de FPS e "
+                           "os recursos do DualSense. DESLIGADO: sem menu rápido e sem trapaças.")};
     static constexpr const char* kStrengths[] = {"", "LOW", "MEDIUM", "HIGH"};
-    lines[kDualSenseStrength] = {"CONTROLLER", "FEEDBACK STRENGTH", kStrengths[settings_.dualsense_strength],
-                                 settings_.dualsense,
-                                 "How strong the DualSense's added rumble and pulses are."};
-    lines[kRenderer] = {"EXPERIMENTAL", "RENDERER", settings_.host_rts ? "FAST" : "ACCURATE", true,
-                        "ACCURATE copies the Xbox 360's video memory exactly, pixel by pixel. FAST draws with the PS5's "
+    lines[kDualSenseStrength] = {T("CONTROLLER", "CONTROLE"), T("FEEDBACK STRENGTH", "FORÇA DO FEEDBACK"), TW(kStrengths[s.dualsense_strength]),
+                                 s.dualsense,
+                                 T("How strong the DualSense's added rumble and pulses are.", "A força da vibração e dos pulsos extras do DualSense.")};
+    lines[kRenderer] = {"EXPERIMENTAL", T("RENDERER", "RENDERIZADOR"), s.host_rts ? T("FAST", "RÁPIDO") : T("ACCURATE", "PRECISO"), true,
+                        T("ACCURATE copies the Xbox 360's video memory exactly, pixel by pixel. FAST draws with the PS5's "
                         "own graphics hardware: quicker, and the light glows hide behind walls and people as they "
-                        "should, but some effects may draw wrong. Testing."};
-    lines[kMusic] = {"AUDIO", "MENU MUSIC", music, true, "How loud this menu's song is.", true};
+                        "should, but some effects may draw wrong. Testing.", "PRECISO copia a memória de vídeo do Xbox 360 exatamente, pixel por pixel. RÁPIDO desenha com o "
+                          "hardware gráfico do próprio PS5: mais veloz, e os brilhos de luz se escondem atrás de paredes e "
+                          "pessoas como deveriam, mas alguns efeitos podem sair errados. Em teste.")};
+    lines[kMusic] = {T("AUDIO", "ÁUDIO"), T("MENU MUSIC", "MÚSICA DO MENU"), music, true, T("How loud this menu's song is.", "O volume da música deste menu."), true};
     return lines;
   }
 
   void ChangeSetting(int row, int step, bool cross) {
+    Settings& s = sets_[set_game_];
     const bool flip = step || cross;
     switch (row) {
       case kFrameRate:
-        if (flip) settings_.fps60 = !settings_.fps60;
+        if (flip) s.fps60 = !s.fps60;
         break;
       case kUpscaling:
-        if (flip) settings_.fsr = !settings_.fsr;
+        if (flip) s.fsr = !s.fsr;
         break;
       case kSharpness:
-        if (!settings_.fsr) break;
-        if (cross) settings_.sharpness = settings_.sharpness % 3 + 1;
-        settings_.sharpness = std::clamp(settings_.sharpness + step, 1, 3);
+        if (!s.fsr) break;
+        if (cross) s.sharpness = s.sharpness % 3 + 1;
+        s.sharpness = std::clamp(s.sharpness + step, 1, 3);
         break;
       case kAntiAliasing:
-        if (cross) settings_.aa = (settings_.aa + 1) % 3;
-        settings_.aa = std::clamp(settings_.aa + step, 0, 2);
+        if (cross) s.aa = (s.aa + 1) % 3;
+        s.aa = std::clamp(s.aa + step, 0, 2);
         break;
       case kFiltering:
-        if (cross) settings_.filter = settings_.filter == 5 ? 2 : settings_.filter + 1;
-        settings_.filter = std::clamp(settings_.filter + step, 2, 5);
+        if (cross) s.filter = s.filter == 5 ? 2 : s.filter + 1;
+        s.filter = std::clamp(s.filter + step, 2, 5);
         break;
       case kLane:
-        if (flip) settings_.lane = !settings_.lane;
+        if (flip) s.lane = !s.lane;
         break;
       case kFps:
-        if (cross) settings_.fps = (settings_.fps + 1) % 3;
-        settings_.fps = std::clamp(settings_.fps + step, 0, 2);
+        if (cross) s.fps = (s.fps + 1) % 3;
+        s.fps = std::clamp(s.fps + step, 0, 2);
         break;
       case kPrompts:
-        if (flip) settings_.ps_prompts = !settings_.ps_prompts;
+        if (flip) s.ps_prompts = !s.ps_prompts;
         break;
       case kDualSense:
-        if (flip) settings_.dualsense = !settings_.dualsense;
+        if (flip) s.dualsense = !s.dualsense;
         break;
       case kLanguage: {
         const int n = int(std::size(Settings::kLanguages));
-        const int i = (Settings::LanguageIndex(settings_.language) + (step ? step : cross ? 1 : 0) + n) % n;
-        settings_.language = Settings::kLanguages[i].id;
+        const int i = (Settings::LanguageIndex(s.language) + (step ? step : cross ? 1 : 0) + n) % n;
+        s.language = Settings::kLanguages[i].id;
         break;
       }
       case kSkipIntro:
-        if (flip) settings_.skip_intro = !settings_.skip_intro;
+        if (flip) s.skip_intro = !s.skip_intro;
         break;
       case kCheatMenu:
-        if (flip) settings_.cheat_menu = !settings_.cheat_menu;
+        if (flip) s.cheat_menu = !s.cheat_menu;
         break;
       case kDualSenseStrength:
-        if (!settings_.dualsense) break;
-        if (cross) settings_.dualsense_strength = settings_.dualsense_strength % 3 + 1;
-        settings_.dualsense_strength = std::clamp(settings_.dualsense_strength + step, 1, 3);
+        if (!s.dualsense) break;
+        if (cross) s.dualsense_strength = s.dualsense_strength % 3 + 1;
+        s.dualsense_strength = std::clamp(s.dualsense_strength + step, 1, 3);
         break;
       case kRenderer:
-        if (flip) settings_.host_rts = !settings_.host_rts;
+        if (flip) s.host_rts = !s.host_rts;
         break;
       case kMusic:
-        settings_.music = std::clamp(settings_.music + step * 10, 0, 100);
+        s.music = std::clamp(s.music + step * 10, 0, 100);
+        sets_[1].music = sets_[2].music = s.music;  // (the menu's: the same for both games)
         break;
     }
   }
@@ -772,20 +942,20 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     return it.index < 0 ? trophies::Grade::kPlatinum : trophies_.trophies[size_t(it.index)].grade();
   }
   std::string NameOf(const Item& it) const {
-    if (it.index < 0) return std::string(install::kGameNames[trophy_game_]) + " Platinum";
+    if (it.index < 0) return std::string(install::kGameNames[trophy_game_]) + T(" Platinum", " Platina");
     const auto& t = trophies_.trophies[size_t(it.index)];
-    return (!t.earned && t.hidden()) ? "Hidden trophy" : t.name;
+    return (!t.earned && t.hidden()) ? T("Hidden trophy", "Troféu oculto") : t.name;
   }
   std::string TextOf(const Item& it) const {
     if (it.index < 0)
-      return "Earn every other " + std::string(install::kGameNames[trophy_game_]) + " trophy (" +
+      return T("Earn every other ", "Conquiste todos os outros troféus de ") + std::string(install::kGameNames[trophy_game_]) + T(" trophy (", " (") +
              std::to_string(trophies_.earnable) + ").";
     const auto& t = trophies_.trophies[size_t(it.index)];
     std::string text;
-    if (!t.earned && t.hidden()) text = "Keep playing to find out what this one is.";
+    if (!t.earned && t.hidden()) text = T("Keep playing to find out what this one is.", "Continue jogando para descobrir qual é este.");
     else text = t.earned || t.locked_description.empty() ? t.description : t.locked_description;
     if (t.online())
-      text += "\n\nOnline: it needs a service this port can't reach, so it doesn't count toward the platinum.";
+      text += T("\n\nOnline: it needs a service this port can't reach, so it doesn't count toward the platinum.", "\n\nOnline: precisa de um serviço que este port não alcança, então não conta para a platina.");
     return text;
   }
 
@@ -862,25 +1032,25 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     if (ask_leftovers_) DrawLeftoversQuestion(dl, size);
   }
 
-  // "The installs are done: delete the files they came from?" over the page.
+  // T("The installs are done: delete the files they came from?", "As instalações terminaram: apagar os arquivos de onde vieram?") over the page.
   void DrawLeftoversQuestion(ImDrawList* dl, const ImVec2& size) {
     const float u = u_;
     dl->AddRectFilled(ImVec2(0, 0), size, A(IM_COL32(0, 0, 0, 170)));
     const float w = 1100 * u, x = (size.x - w) * 0.5f, y = size.y * 0.5f - 200 * u;
     dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + 400 * u), A(IM_COL32(14, 12, 12, 250)), 10 * u);
     dl->AddRectFilled(ImVec2(x, y), ImVec2(x + 8 * u, y + 400 * u), A(kRed));
-    dl->AddText(g_item, 44 * u, ImVec2(x + 50 * u, y + 40 * u), A(kWhite), "INSTALL COMPLETE");
+    dl->AddText(g_item, 44 * u, ImVec2(x + 50 * u, y + 40 * u), A(kWhite), T("INSTALL COMPLETE", "INSTALAÇÃO CONCLUÍDA"));
     char line[96];
     std::snprintf(line, sizeof(line), "%.1f GB", double(leftover_bytes_) / (1024.0 * 1024.0 * 1024.0));
     const std::string text =
-        std::string("The disc images and DLC packages it was installed from are still in "
-                    "PPSA54107/install/ (") +
+        std::string(T("The disc images and DLC packages it was installed from are still in "
+                    "PPSA54107/install/ (", "As imagens de disco e os pacotes de DLC de onde foi instalado ainda estão em PPSA54107/install/ (")) +
         line +
-        "). The game doesn't need them any more.\n\nDelete them to free the space, or keep them (they won't "
-        "be installed again).";
+        T("). The game doesn't need them any more.\n\nDelete them to free the space, or keep them (they won't "
+        "be installed again).", "). O jogo não precisa mais deles.\n\nApague-os para liberar espaço, ou guarde-os (eles não serão instalados de novo).");
     dl->AddText(g_body, 28 * u, ImVec2(x + 50 * u, y + 110 * u), A(kText), text.c_str(), nullptr, w - 100 * u);
-    dl->AddText(g_item, 34 * u, ImVec2(x + 50 * u, y + 320 * u), A(kWhite), "X  DELETE");
-    dl->AddText(g_item, 34 * u, ImVec2(x + 380 * u, y + 320 * u), A(kGrey), "O  KEEP");
+    dl->AddText(g_item, 34 * u, ImVec2(x + 50 * u, y + 320 * u), A(kWhite), T("X  DELETE", "X  APAGAR"));
+    dl->AddText(g_item, 34 * u, ImVec2(x + 380 * u, y + 320 * u), A(kGrey), T("O  KEEP", "O  GUARDAR"));
   }
 
   ImU32 A(ImU32 c, float a = -1) const {
@@ -894,7 +1064,9 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   void DrawBackground(ImDrawList* dl, const ImVec2& size, float dt) {
     const float u = u_;
     dl->AddRectFilled(ImVec2(0, 0), size, IM_COL32(8, 8, 8, 255));
-    shown_game_ += (float(game_) - shown_game_) * std::min(1.0f, dt * 5.0f);
+    // (SETTINGS: the picture of the game whose settings they are)
+    const int shown = page_ == kSettings ? set_game_ : game_;
+    shown_game_ += (float(shown) - shown_game_) * std::min(1.0f, dt * 5.0f);
     for (int g = 1; g <= 2; ++g) {
       const Image& bg = background_[g];
       const float weight = g == 2 ? shown_game_ - 1.0f : 2.0f - shown_game_;
@@ -937,12 +1109,12 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     };
     x += button(x, "L1") + 30 * u;
     for (int i = 0; i < kPages; ++i) {
-      const float w = Width(g_item, ts, kPageNames[i]);
+      const float w = Width(g_item, ts, PageName(i));
       if (i == page_) {
         tab_target_x_ = x, tab_target_w_ = w;
         if (tab_w_ == 0) tab_x_ = x, tab_w_ = w;
       }
-      dl->AddText(g_item, ts, ImVec2(x, y), A(i == page_ ? kWhite : kGrey), kPageNames[i]);
+      dl->AddText(g_item, ts, ImVec2(x, y), A(i == page_ ? kWhite : kGrey), PageName(i));
       x += w + 52 * u;
     }
     button(x - 22 * u, "R1");
@@ -962,19 +1134,35 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
 
   void DrawFooter(ImDrawList* dl, const ImVec2& size) {
     const float u = u_, y = size.y - 92 * u;
-    dl->AddRectFilled(ImVec2(140 * u, y - 18 * u), ImVec2(size.x - 140 * u, y - 17 * u), A(IM_COL32(255, 255, 255, 40)));
-    dl->AddText(g_body, 22 * u, ImVec2(140 * u, y), A(kRed),
-                Upper(Date(int64_t(std::time(nullptr)), "%a / %b %d / %I:%M %p")).c_str());
     std::string hints;
     switch (page_) {
-      case kHome: hints = "UP DOWN  GAME      X  PLAY      L1 R1  PAGES"; break;
-      case kContent: hints = "UP DOWN  MOVE      X  INSTALL      TRIANGLE  UNINSTALL      O  BACK      L1 R1  PAGES"; break;
-      case kSaves: hints = "UP DOWN  MOVE      X  SELECT      O  BACK      L1 R1  PAGES"; break;
-      case kSettings: hints = "UP DOWN  MOVE      LEFT RIGHT  CHANGE      O  BACK      L1 R1  PAGES"; break;
-      case kTrophies: hints = "UP DOWN  MOVE      LEFT RIGHT  PAGE UP / DOWN      TRIANGLE  OTHER GAME      O  BACK"; break;
-      default: hints = "O  BACK      L1 R1  PAGES"; break;
+      case kHome: hints = T("UP DOWN  GAME      X  PLAY      L1 R1  PAGES", "CIMA BAIXO  JOGO      X  JOGAR      L1 R1  PÁGINAS"); break;
+      case kContent: hints = T("UP DOWN  MOVE      X  INSTALL      TRIANGLE  UNINSTALL      O  BACK      L1 R1  PAGES", "CIMA BAIXO  MOVER      X  INSTALAR      TRIÂNGULO  DESINSTALAR      O  VOLTAR      L1 R1  PÁGINAS"); break;
+      case kSaves: hints = T("UP DOWN  MOVE      X  SELECT      O  BACK      L1 R1  PAGES", "CIMA BAIXO  MOVER      X  ESCOLHER      O  VOLTAR      L1 R1  PÁGINAS"); break;
+      case kSettings:
+        hints = in_list_ ? T("UP DOWN  MOVE      LEFT RIGHT  CHANGE      SQUARE  RECOMMENDED      O  GAMES      L1 R1  PAGES", "CIMA BAIXO  MOVER      ESQUERDA DIREITA  MUDAR      QUADRADO  RECOMENDADO      O  JOGOS      L1 R1  "
+                             "PÁGINAS")
+                         : T("UP DOWN  GAME      X  SETTINGS      SQUARE  RECOMMENDED      O  BACK      L1 R1  PAGES", "CIMA BAIXO  JOGO      X  AJUSTES      QUADRADO  RECOMENDADO      O  VOLTAR      L1 R1  PÁGINAS");
+        break;
+      case kTrophies: hints = T("UP DOWN  MOVE      LEFT RIGHT  PAGE UP / DOWN      TRIANGLE  OTHER GAME      O  BACK", "CIMA BAIXO  MOVER      ESQUERDA DIREITA  PULAR PÁGINA      TRIÂNGULO  OUTRO JOGO      O  VOLTAR"); break;
+      default: hints = T("O  BACK      L1 R1  PAGES", "O  VOLTAR      L1 R1  PÁGINAS"); break;
     }
-    dl->AddText(g_body, 22 * u, ImVec2(size.x - 140 * u - Width(g_body, 22 * u, hints), y), A(kRed), hints.c_str());
+    const float hints_w = Hints(dl, g_body, 22 * u, ImVec2(0, 0), 0, hints, false);
+    // HOME leaves the picture undimmed: a shade in the corner under the hints,
+    // fading out to the left and upward
+    const float shade = 1.0f - std::clamp(page_dark_ / 0.74f, 0.0f, 1.0f);
+    if (shade > 0.01f) {
+      const float xs = size.x - 140 * u - hints_w - 40 * u, ys = size.y - 150 * u, f = 160 * u;
+      const ImU32 c = A(IM_COL32(0, 0, 0, int(200 * shade))), z = A(IM_COL32(0, 0, 0, 0));
+      dl->AddRectFilled(ImVec2(xs, ys), size, c);
+      dl->AddRectFilledMultiColor(ImVec2(xs, ys - f), ImVec2(size.x, ys), z, z, c, c);
+      dl->AddRectFilledMultiColor(ImVec2(xs - f, ys), ImVec2(xs, size.y), z, c, c, z);
+      dl->AddRectFilledMultiColor(ImVec2(xs - f, ys - f), ImVec2(xs, ys), z, z, c, z);
+    }
+    dl->AddRectFilled(ImVec2(140 * u, y - 18 * u), ImVec2(size.x - 140 * u, y - 17 * u), A(IM_COL32(255, 255, 255, 40)));
+    dl->AddText(g_body, 22 * u, ImVec2(140 * u, y), A(kRed),
+                Upper(Date(int64_t(std::time(nullptr)), T("%a / %b %d / %I:%M %p", "%a / %d %b / %H:%M"))).c_str());
+    Hints(dl, g_body, 22 * u, ImVec2(size.x - 140 * u - hints_w, y), A(kRed), hints, true);
   }
 
   void DrawHome(ImDrawList* dl, const ImVec2& size) {
@@ -1001,7 +1189,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       if (!sel) continue;
       const bool installing = install::TheJob().Busy();
       const float ps = 72 * u;
-      dl->AddText(g_item, ps, ImVec2(left, y), P(Ready() && !installing ? kWhite : kDim), "PLAY");
+      dl->AddText(g_item, ps, ImVec2(left, y), P(Ready() && !installing ? kWhite : kDim), T("PLAY", "JOGAR"));
       y += ps + 20 * u;
       if (!start_error_.empty()) {
         const float pw = 900 * u, th = g_body->CalcTextSizeA(26 * u, FLT_MAX, pw, start_error_.c_str()).y;
@@ -1017,16 +1205,22 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         missing_flash_ = std::max(0.0f, missing_flash_ - 0.03f);
         const char* what =
             installed_.game[g]
-                ? (g == 1 ? "SAINTS ROW NEEDS TITLE UPDATE 1\nPut Saints Row's Title Update 1 package (TU_...) in "
-                            "PPSA54107/install/ and open the app again: it installs by itself."
-                          : "SAINTS ROW 2 NEEDS TITLE UPDATE 3\nPut Saints Row 2's Title Update 3 package (TU_...) in "
-                            "PPSA54107/install/ and open the app again: it installs by itself.")
-            : g == 1 ? "SAINTS ROW ISN'T INSTALLED\nPut your Saints Row disc image (.iso, any name) or the disc's files, "
+                ? (g == 1 ? T("SAINTS ROW NEEDS TITLE UPDATE 1\nPut Saints Row's Title Update 1 package (TU_...) in "
+                            "PPSA54107/install/ and open the app again: it installs by itself.", "SAINTS ROW PRECISA DO TITLE UPDATE 1\nColoque o pacote do Title Update 1 de Saints Row (TU_...) em "
+                              "PPSA54107/install/ e abra o app de novo: ele se instala sozinho.")
+                          : T("SAINTS ROW 2 NEEDS TITLE UPDATE 3\nPut Saints Row 2's Title Update 3 package (TU_...) in "
+                            "PPSA54107/install/ and open the app again: it installs by itself.", "SAINTS ROW 2 PRECISA DO TITLE UPDATE 3\nColoque o pacote do Title Update 3 de Saints Row 2 (TU_...) "
+                              "em PPSA54107/install/ e abra o app de novo: ele se instala sozinho."))
+            : g == 1 ? T("SAINTS ROW ISN'T INSTALLED\nPut your Saints Row disc image (.iso, any name) or the disc's files, "
                        "and Title Update 1's package, in PPSA54107/install/ and open the app again: they install by "
-                       "themselves. The CONTENT page shows what's there."
-                     : "SAINTS ROW 2 ISN'T INSTALLED\nPut your Saints Row 2 disc image (.iso, any name) or the disc's "
+                       "themselves. The CONTENT page shows what's there.", "SAINTS ROW NÃO ESTÁ INSTALADO\nColoque a imagem do seu disco de Saints Row (.iso, qualquer nome) ou "
+                         "os arquivos do disco, e o pacote do Title Update 1, em PPSA54107/install/ e abra o app de novo: "
+                         "eles se instalam sozinhos. A página CONTEÚDO mostra o que está lá.")
+                     : T("SAINTS ROW 2 ISN'T INSTALLED\nPut your Saints Row 2 disc image (.iso, any name) or the disc's "
                        "files, and Title Update 3's package, in PPSA54107/install/ and open the app again: they "
-                       "install by themselves. The CONTENT page shows what's there.";
+                       "install by themselves. The CONTENT page shows what's there.", "SAINTS ROW 2 NÃO ESTÁ INSTALADO\nColoque a imagem do seu disco de Saints Row 2 (.iso, qualquer nome) "
+                         "ou os arquivos do disco, e o pacote do Title Update 3, em PPSA54107/install/ e abra o app de novo: "
+                         "eles se instalam sozinhos. A página CONTEÚDO mostra o que está lá.");
         const float pw = 900 * u, th = g_body->CalcTextSizeA(26 * u, FLT_MAX, pw, what).y;
         dl->AddRectFilled(ImVec2(left - 16 * u, y - 12 * u), ImVec2(left + pw + 16 * u, y + th + 12 * u),
                           P(IM_COL32(40, 6, 6, ImU32(200 + 55 * missing_flash_))), 6 * u);
@@ -1034,10 +1228,10 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
         dl->AddText(g_body, 26 * u, ImVec2(left, y), P(kWhite), what, nullptr, pw);
         y += th + 42 * u;
       } else {
-        std::string where = "Your saves load with the game.";
+        std::string where = T("Your saves load with the game.", "Seus saves carregam com o jogo.");
         if (installed_.dlc)
-          where = (installed_.dlc == 1 ? std::string("1 DLC pack") : std::to_string(installed_.dlc) + " DLC packs") +
-                  " and your saves load with the game.";
+          where = (installed_.dlc == 1 ? std::string(T("1 DLC pack", "1 pacote de DLC")) : std::to_string(installed_.dlc) + T(" DLC packs", " pacotes de DLC")) +
+                  T(" and your saves load with the game.", " e seus saves carregam com o jogo.");
         dl->AddText(g_body, 26 * u, ImVec2(left, y), P(kGrey), where.c_str());
         y += 54 * u;
       }
@@ -1100,32 +1294,38 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     const float u = u_, left = 140 * u + page_dx_;
     float y = 200 * u;
     const std::string dlc_name =
-        installed_.dlc ? "DLC  (" + std::to_string(installed_.dlc) + (installed_.dlc == 1 ? " PACK)" : " PACKS)") : "DLC";
+        installed_.dlc ? "DLC  (" + std::to_string(installed_.dlc) + (installed_.dlc == 1 ? T(" PACK)", " PACOTE)") : T(" PACKS)", " PACOTES)")) : "DLC";
     const std::string names[kContentRows] = {"SAINTS ROW", "SAINTS ROW 2", dlc_name};
     const char* help[kContentRows] = {
-        "Saints Row's disc and its Title Update 1 (both needed). Put your disc image (.iso, any name) or a "
+        T("Saints Row's disc and its Title Update 1 (both needed). Put your disc image (.iso, any name) or a "
         "folder of the disc's files, and the title update's package (TU_...), in PPSA54107/install/: they install "
-        "into PPSA54107/game1/ when the app opens, or with X here.",
-        "Saints Row 2's disc and its Title Update 3 (both needed). Put your disc image (.iso, any name) or a "
+        "into PPSA54107/game1/ when the app opens, or with X here.", "O disco de Saints Row e o seu Title Update 1 (os dois são necessários). Coloque a imagem do disco "
+          "(.iso, qualquer nome) ou uma pasta com os arquivos do disco, e o pacote do title update (TU_...), "
+          "em PPSA54107/install/: eles se instalam em PPSA54107/game1/ quando o app abre, ou com X aqui."),
+        T("Saints Row 2's disc and its Title Update 3 (both needed). Put your disc image (.iso, any name) or a "
         "folder of the disc's files, and the title update's package (TU_...), in PPSA54107/install/: they install "
-        "into PPSA54107/game2/ when the app opens, or with X here.",
-        "Optional: either game's DLC (Saints Row's Money Shot and clothing packs; Saints Row 2's Ultor Exposed, "
+        "into PPSA54107/game2/ when the app opens, or with X here.", "O disco de Saints Row 2 e o seu Title Update 3 (os dois são necessários). Coloque a imagem do disco "
+          "(.iso, qualquer nome) ou uma pasta com os arquivos do disco, e o pacote do title update (TU_...), "
+          "em PPSA54107/install/: eles se instalam em PPSA54107/game2/ quando o app abre, ou com X aqui."),
+        T("Optional: either game's DLC (Saints Row's Money Shot and clothing packs; Saints Row 2's Ultor Exposed, "
         "Corporate Warfare and the Unkut pack). Put their packages (any names) in PPSA54107/install/: each "
-        "installs by itself. TRIANGLE removes them all."};
+        "installs by itself. TRIANGLE removes them all.", "Opcional: as DLCs de qualquer um dos jogos (Money Shot e os pacotes de roupas de Saints Row; Ultor "
+          "Exposed, Corporate Warfare e o pacote Unkut de Saints Row 2). Coloque os pacotes (qualquer nome) em "
+          "PPSA54107/install/: cada um se instala sozinho. TRIÂNGULO remove todos.")};
     for (int r = 0; r < kContentRows; ++r) {
       const bool sel = r == content_row_, in = RowInstalled(r);
       const install::Source* src = SourceFor(r);
       const float fs = 40 * u;
       if (sel) dl->AddRectFilled(ImVec2(left - 30 * u, y + 8 * u), ImVec2(left - 20 * u, y + fs), P(kRed));
       dl->AddText(g_item, fs, ImVec2(left, y), P(sel ? kWhite : kGrey), names[r].c_str());
-      std::string status = in && !(r == kRowDlc && src) ? "INSTALLED"
-                           : src                        ? "READY TO INSTALL"
-                                                        : "NOT INSTALLED";
+      std::string status = in && !(r == kRowDlc && src) ? T("INSTALLED", "INSTALADO")
+                           : src                        ? T("READY TO INSTALL", "PRONTO PARA INSTALAR")
+                                                        : T("NOT INSTALLED", "NÃO INSTALADO");
       // (a disc without the title update the program is built from)
       if ((r == kRowGame1 || r == kRowGame2) && !src && installed_.game[r + 1] && !installed_.update[r + 1])
-        status = r == kRowGame1 ? "NEEDS TITLE UPDATE 1" : "NEEDS TITLE UPDATE 3";
-      if (r == kRowDlc && src) status = std::to_string(DlcWaiting()) + " READY TO INSTALL";
-      if (sel && Confirming(100 + r)) status = "PRESS TRIANGLE AGAIN TO UNINSTALL";
+        status = r == kRowGame1 ? T("NEEDS TITLE UPDATE 1", "PRECISA DO TITLE UPDATE 1") : T("NEEDS TITLE UPDATE 3", "PRECISA DO TITLE UPDATE 3");
+      if (r == kRowDlc && src) status = std::to_string(DlcWaiting()) + T(" READY TO INSTALL", " PRONTOS PARA INSTALAR");
+      if (sel && Confirming(100 + r)) status = T("PRESS TRIANGLE AGAIN TO UNINSTALL", "TRIÂNGULO DE NOVO: DESINSTALAR");
       dl->AddText(g_body, 28 * u, ImVec2(left + 430 * u, y + 8 * u),
                   P(in ? kWhite : src ? kWhite : kGrey),
                   status.c_str());
@@ -1143,17 +1343,17 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     int avatar_items = 0;
     for (const auto& s : sources_) {
       if (s.kind == install::Kind::kArchive)
-        notes.push_back(Short(s.label, 40) + "  -  extract it on a PC first (7-Zip)");
+        notes.push_back(Short(s.label, 40) + T("  -  extract it on a PC first (7-Zip)", "  -  extraia num PC antes (7-Zip)"));
       else if (s.kind == install::Kind::kOther && s.label == install::kAvatarItemLabel)
         ++avatar_items;
       else if (s.kind == install::Kind::kOther)
         notes.push_back(Short(s.label, 60));
     }
     if (avatar_items)
-      notes.push_back(std::to_string(avatar_items) + (avatar_items == 1 ? " Xbox 360 avatar item" : " Xbox 360 avatar items") +
-                      "  -  not game DLC, not used here");
+      notes.push_back(std::to_string(avatar_items) + (avatar_items == 1 ? T(" Xbox 360 avatar item", " item de avatar do Xbox 360") : T(" Xbox 360 avatar items", " itens de avatar do Xbox 360")) +
+                      T("  -  not game DLC, not used here", "  -  não são DLC do jogo, não usados aqui"));
     if (!notes.empty()) {
-      dl->AddText(g_body, 20 * u, ImVec2(left, y), P(kRed), "ALSO IN PPSA54107/INSTALL");
+      dl->AddText(g_body, 20 * u, ImVec2(left, y), P(kRed), T("ALSO IN PPSA54107/INSTALL", "TAMBÉM EM PPSA54107/INSTALL"));
       y += 34 * u;
       for (size_t i = 0; i < notes.size() && i < 5; ++i, y += 32 * u)
         dl->AddText(g_body, 24 * u, ImVec2(left, y), P(kGrey), notes[i].c_str());
@@ -1183,11 +1383,11 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       if (sel) dl->AddRectFilled(ImVec2(left - 30 * u, y + 6 * u), ImVec2(left - 20 * u, y + fs), P(kRed));
       std::string label;
       if (r == 0) {
-        label = "BACK UP SAVES";
+        label = T("BACK UP SAVES", "FAZER BACKUP DOS SAVES");
       } else {
         const install::Source* s = saves[size_t(r - 1)];
-        label = (s->kind == install::Kind::kBackup ? "RESTORE  " : "IMPORT  ") + Short(s->label, 40);
-        if (sel && Confirming(200 + r)) label = "PRESS X AGAIN TO CONFIRM";
+        label = (s->kind == install::Kind::kBackup ? T("RESTORE  ", "RESTAURAR  ") : T("IMPORT  ", "IMPORTAR  ")) + Short(s->label, 40);
+        if (sel && Confirming(200 + r)) label = T("PRESS X AGAIN TO CONFIRM", "APERTE X DE NOVO PARA CONFIRMAR");
       }
       dl->AddText(g_item, fs, ImVec2(left, y), P(sel ? kWhite : kGrey), label.c_str());
       y += fs + 22 * u;
@@ -1196,7 +1396,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     y = DrawJob(dl, left, y, 820 * u) + 10 * u;
     // the saves the app has, newest first
     if (!installed_.save_list.empty()) {
-      Spaced(dl, g_body, 19 * u, ImVec2(left, y), P(kRed), "YOUR SAVES", 3 * u);
+      Spaced(dl, g_body, 19 * u, ImVec2(left, y), P(kRed), T("YOUR SAVES", "SEUS SAVES"), 3 * u);
       y += 36 * u;
       for (size_t i = 0; i < installed_.save_list.size() && i < 6; ++i, y += 34 * u) {
         const auto& sv = installed_.save_list[i];
@@ -1206,32 +1406,65 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
                     Short((sv.game == 2 ? "P2  " : "P1  ") + name, 34).c_str());
         if (sv.modified)
           dl->AddText(g_body, 26 * u, ImVec2(left + 520 * u, y), P(kGrey),
-                      Upper(Date(sv.modified, "%b %d %Y  %I:%M %p")).c_str());
+                      Upper(Date(sv.modified, T("%b %d %Y  %I:%M %p", "%d %b %Y  %H:%M"))).c_str());
       }
     }
     const char* help =
         saves_row_ == 0
-            ? "Copies your saves, your trophies and your settings to PPSA54107/install/backups/. Copy that folder "
-              "to a PC or a USB drive before deleting or reinstalling the app."
+            ? T("Copies your saves, your trophies and your settings to PPSA54107/install/backups/. Copy that folder "
+              "to a PC or a USB drive before deleting or reinstalling the app.", "Copia seus saves, seus troféus e seus ajustes para PPSA54107/install/backups/. Copie essa pasta "
+                "para um PC ou um pendrive antes de apagar ou reinstalar o app.")
         : saves[size_t(saves_row_ - 1)]->kind == install::Kind::kBackup
-            ? "Puts this backup's saves, trophies and settings back, over the ones here."
-            : "Imports this Xbox 360 save (a package copied off a 360, with a USB drive or Horizon) into the app. "
-              "A save of the same name here is replaced.";
+            ? T("Puts this backup's saves, trophies and settings back, over the ones here.", "Devolve os saves, troféus e ajustes deste backup, por cima dos que estão aqui.")
+            : T("Imports this Xbox 360 save (a package copied off a 360, with a USB drive or Horizon) into the app. "
+              "A save of the same name here is replaced.", "Importa este save do Xbox 360 (um pacote copiado de um 360, com um pendrive ou o Horizon) para o "
+                "app. Um save com o mesmo nome aqui é substituído.");
     const char* where =
-        "\n\nTo import a save, put the Xbox 360 save package (the file copied off the 360's drive: "
+        T("\n\nTo import a save, put the Xbox 360 save package (the file copied off the 360's drive: "
         "Content/<profile>/4156084E/00000001/... for Saints Row, .../415608A7/00000001/... for Saints Row 2) in "
         "PPSA54107/install/. A backup made here, copied back into "
-        "PPSA54107/install/ (or install/backups/), is listed to restore.";
+        "PPSA54107/install/ (or install/backups/), is listed to restore.", "\n\nPara importar um save, coloque o pacote de save do Xbox 360 (o arquivo copiado do disco do 360: "
+          "Content/<perfil>/4156084E/00000001/... para Saints Row, .../415608A7/00000001/... para Saints Row "
+          "2) em PPSA54107/install/. Um backup feito aqui, copiado de volta para PPSA54107/install/ (ou "
+          "install/backups/), aparece para restaurar.");
     const std::string text = std::string(help) + (saves.empty() ? where : "");
     const float px = 1180 * u + page_dx_, pw = size.x - 140 * u - px;
     dl->AddRectFilled(ImVec2(px - 40 * u, 200 * u), ImVec2(px - 39 * u, 760 * u), P(IM_COL32(255, 255, 255, 40)));
     dl->AddText(g_body, 26 * u, ImVec2(px, 204 * u), P(kText), text.c_str(), nullptr, pw);
   }
 
+  // SETTINGS' left side: the games, as on HOME (the chosen one large with the accent's bar, pulsing
+  // while the list has the pad), each with its own settings at the right.
+  void DrawSettingsGames(ImDrawList* dl, float left, float top) {
+    const float u = u_;
+    Spaced(dl, g_body, 19 * u, ImVec2(left, top), P(kRed), T("GAMES", "JOGOS"), 3 * u);
+    float y = top + 46 * u;
+    for (int g = 1; g <= 2; ++g) {
+      const bool sel = g == set_game_;
+      float h = (sel ? 53 : 37) * u;
+      if (logo_[g]) h = std::min(h, (sel ? 330 : 260) * u * logo_[g].h / logo_[g].w);  // (a wide logo kept to the column)
+      if (sel) {
+        const float pulse = in_list_ ? 1.0f : 0.7f + 0.3f * std::sin(time_ * 5.0f);
+        dl->AddRectFilled(ImVec2(left - 38 * u, y + h * 0.12f), ImVec2(left - 24 * u, y + h * 0.88f),
+                          P((kRed & 0x00FFFFFFu) | (ImU32(255 * pulse) << 24)));
+      }
+      if (const Image& logo = logo_[g]) {
+        dl->AddImage(logo.id, ImVec2(left, y), ImVec2(left + logo.w * h / logo.h, y + h), ImVec2(0, 0), ImVec2(1, 1),
+                     P(sel ? kWhite : IM_COL32(150, 146, 140, 200)));
+      } else {
+        dl->AddText(g_item, h * 0.7f, ImVec2(left, y), P(sel ? kWhite : kGrey), kGameTitles[g]);
+      }
+      y += h + 26 * u;
+    }
+  }
+
   void DrawSettings(ImDrawList* dl, const ImVec2& size) {
-    const float u = u_, left = 140 * u + page_dx_;
+    const float u = u_, left = 580 * u + page_dx_;
     const auto lines = SettingsLines();
     const float fs = 36 * u, top = 190 * u, bottom = size.y - 120 * u;
+    const float px = 1360 * u + page_dx_, pw = size.x - 140 * u - px;  // (the help, at the right)
+    DrawSettingsGames(dl, 140 * u + page_dx_, top);
+    dl->AddRectFilled(ImVec2(left - 60 * u, 190 * u), ImVec2(left - 59 * u, 760 * u), P(IM_COL32(255, 255, 255, 40)));
     // where each row and section heading goes (scrolled so the focused row stays in view)
     std::vector<float> row_y(kSettingsRows, 0.0f), head_y(kSettingsRows, -1.0f);
     float y = 0;
@@ -1247,49 +1480,62 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     const float view = bottom - top;
     const float want = std::clamp(row_y[size_t(row_)] - view * 0.45f, 0.0f, std::max(0.0f, y - view));
     settings_scroll_ += (want - settings_scroll_) * 0.25f;
-    dl->PushClipRect(ImVec2(0, top - 4 * u), ImVec2(1000 * u + page_dx_, bottom), true);
+    dl->PushClipRect(ImVec2(0, top - 4 * u), ImVec2(px - 40 * u, bottom), true);
     for (int r = 0; r < kSettingsRows; ++r) {
       const SettingLine& l = lines[size_t(r)];
       if (head_y[size_t(r)] >= 0)
         Spaced(dl, g_body, 19 * u, ImVec2(left, top + head_y[size_t(r)] - settings_scroll_), P(kRed), l.section,
                3 * u);
       y = top + row_y[size_t(r)] - settings_scroll_;
-      const bool sel = r == row_;
+      const bool sel = in_list_ && r == row_;
       const ImU32 col = !l.enabled ? kDim : sel ? kWhite : kGrey;
       if (sel) dl->AddRectFilled(ImVec2(left - 30 * u, y + 8 * u), ImVec2(left - 20 * u, y + fs), P(kRed));
       dl->AddText(g_item, fs, ImVec2(left, y), P(col), l.label);
       const std::string v = l.slider || !l.enabled ? l.value : "<  " + l.value + "  >";
-      dl->AddText(g_item, fs, ImVec2(left + 420 * u, y), P(sel ? (l.enabled ? kRed : kDim) : col), v.c_str());
+      dl->AddText(g_item, fs, ImVec2(left + 380 * u, y), P(sel ? (l.enabled ? kRed : kDim) : col), v.c_str());
       if (l.slider) {
-        const float x0 = left + 540 * u, w = 260 * u, yy = y + fs * 0.6f;
+        const float x0 = left + 480 * u, w = 220 * u, yy = y + fs * 0.6f;
         dl->AddRectFilled(ImVec2(x0, yy - 3 * u), ImVec2(x0 + w, yy + 3 * u), P(kDim));
-        dl->AddRectFilled(ImVec2(x0, yy - 3 * u), ImVec2(x0 + w * settings_.music / 100.0f, yy + 3 * u),
+        dl->AddRectFilled(ImVec2(x0, yy - 3 * u), ImVec2(x0 + w * sets_[1].music / 100.0f, yy + 3 * u),
                           P(sel ? kRed : kGrey));
       }
     }
     dl->PopClipRect();
-    // the focused row's help, at the right
-    const float px = 1060 * u + page_dx_, pw = 720 * u;
+    // the focused row's help, at the right (in the game list: what the list is for)
     dl->AddRectFilled(ImVec2(px - 40 * u, 190 * u), ImVec2(px - 39 * u, 760 * u), P(IM_COL32(255, 255, 255, 40)));
-    dl->AddText(g_item, 34 * u, ImVec2(px, 190 * u), P(kWhite), lines[size_t(row_)].label);
-    dl->AddText(g_body, 28 * u, ImVec2(px, 244 * u), P(kText), lines[size_t(row_)].help, nullptr, pw);
-    dl->AddText(g_body, 22 * u, ImVec2(px, 700 * u), P(kDim), "Saved when you press PLAY.");
+    const std::string name = in_list_ ? lines[size_t(row_)].label : kGameTitles[set_game_];
+    const std::string help =
+        in_list_ ? lines[size_t(row_)].help
+                 : std::string(set_game_ == 1 ? "Saints Row" : "Saints Row 2") +
+                       T("'s own settings: each game keeps its own. X or RIGHT to change them. SQUARE puts back the "
+                       "recommended settings, the ones it was tested with.", ": os ajustes deste jogo, cada jogo tem os seus. X ou DIREITA para mudá-los. QUADRADO volta aos "
+                         "ajustes recomendados, os que foram testados.");
+    dl->AddText(g_item, 34 * u, ImVec2(px, 190 * u), P(kWhite), name.c_str());
+    dl->AddText(g_body, 26 * u, ImVec2(px, 244 * u), P(kText), help.c_str(), nullptr, pw);
+    if (Confirming(300 + set_game_))
+      dl->AddText(g_body, 22 * u, ImVec2(px, 676 * u), P(kRed), T("PRESS SQUARE AGAIN TO PUT BACK THE RECOMMENDED SETTINGS", "APERTE QUADRADO DE NOVO PARA VOLTAR ÀS CONFIGURAÇÕES RECOMENDADAS"),
+                  nullptr, pw);
+    else if (time_ - reset_t_ < 3.0f)
+      dl->AddText(g_body, 22 * u, ImVec2(px, 700 * u), P(kRed), T("RECOMMENDED SETTINGS PUT BACK", "CONFIGURAÇÕES RECOMENDADAS RESTAURADAS"));
+    else
+      dl->AddText(g_body, 22 * u, ImVec2(px, 700 * u), P(kDim), T("Saved when you press PLAY.", "Salvo quando você aperta JOGAR."));
   }
 
   void DrawTrophies(ImDrawList* dl, const ImVec2& size, float dt) {
     const float u = u_;
     // which game's, at the top right (TRIANGLE: the other's)
     {
-      const std::string which = std::string(kGameTitles[trophy_game_]) + "  /  TRIANGLE: " + kGameTitles[3 - trophy_game_];
+      const std::string which = std::string(kGameTitles[trophy_game_]) + T("  /  TRIANGLE: ", "  /  TRIÂNGULO: ") + kGameTitles[3 - trophy_game_];
       dl->AddText(g_body, 22 * u, ImVec2(size.x - 140 * u - Width(g_body, 22 * u, which), 140 * u), P(kRed),
                   which.c_str());
     }
     if (!trophies_.loaded) {
-      const std::string start = std::string("START ") + kGameTitles[trophy_game_] + " ONCE";
+      const std::string start = std::string(T("START ", "INICIE ")) + kGameTitles[trophy_game_] + T(" ONCE", " UMA VEZ");
       dl->AddText(g_item, 44 * u, ImVec2(140 * u + page_dx_, 220 * u), P(kWhite), start.c_str());
       dl->AddText(g_body, 28 * u, ImVec2(140 * u + page_dx_, 290 * u), P(kGrey),
-                  "The trophy list comes from the game itself: start it once, and the next time the menu opens "
-                  "your trophies are here, with the ones you've earned.",
+                  T("The trophy list comes from the game itself: start it once, and the next time the menu opens "
+                  "your trophies are here, with the ones you've earned.", "A lista de troféus vem do próprio jogo: inicie-o uma vez, e da próxima vez que o menu abrir seus "
+                    "troféus estarão aqui, com os que você já conquistou."),
                   nullptr, 1000 * u);
       return;
     }
@@ -1317,7 +1563,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     const float want = std::clamp(sel_row * row_h - view * 0.4f, 0.0f, std::max(0.0f, rows.size() * row_h - view));
     scroll_ += (want - scroll_) * std::min(1.0f, dt * 12.0f);
     const float x = 140 * u + page_dx_, right = 940 * u + page_dx_;
-    static const char* const kGroupNames[] = {"EARNED", "NOT EARNED YET", "ONLINE ONLY"};
+    static const char* const kGroupNames[] = {T("EARNED", "CONQUISTADOS"), T("NOT EARNED YET", "AINDA NÃO CONQUISTADOS"), T("ONLINE ONLY", "SÓ ONLINE")};
     dl->PushClipRect(ImVec2(0, top), ImVec2(size.x, bottom), true);
     for (size_t r = 0; r < rows.size(); ++r) {
       const float ry = top + r * row_h - scroll_;
@@ -1346,7 +1592,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     const std::string pct = std::to_string(trophies_.Percent()) + "%";
     dl->AddText(g_title, 72 * u, ImVec2(px, py - 10 * u), P(kWhite), pct.c_str());
     const float pctw = Width(g_title, 72 * u, pct);
-    const std::string of = std::to_string(trophies_.earned) + " of " + std::to_string(trophies_.earnable) + " earned";
+    const std::string of = std::to_string(trophies_.earned) + T(" of ", " de ") + std::to_string(trophies_.earnable) + T(" earned", " conquistados");
     dl->AddText(g_body, 26 * u, ImVec2(px + pctw + 24 * u, py + 34 * u), P(kGrey), of.c_str());
     float rx = px + pw;
     for (int g = 0; g < 3; ++g) {  // (bronze at the right, gold at the left)
@@ -1369,7 +1615,8 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     const float dx = px + (1 - detail_in_) * 14 * u;
     Icon(dl, it, dx, py, 112 * u, da);
     const trophies::Grade g = GradeOf(it);
-    const std::string grade = Upper(std::string(trophies::GradeName(g)) + " trophy");
+    const std::string grade = Portuguese() ? Upper(std::string("Troféu de ") + TW(trophies::GradeName(g)))
+                                            : Upper(std::string(trophies::GradeName(g)) + T(" trophy", ""));
     dl->AddText(g_body, 20 * u, ImVec2(dx + 136 * u, py + 8 * u), trophies::GradeColor(g, da), grade.c_str());
     dl->AddText(g_item, 36 * u, ImVec2(dx + 136 * u, py + 34 * u), A(kWhite, da), NameOf(it).c_str(), nullptr,
                 pw - 136 * u);
@@ -1379,10 +1626,10 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     py += g_body->CalcTextSizeA(27 * u, FLT_MAX, pw, text.c_str()).y + 34 * u;
     const trophies::Trophy* t = it.index < 0 ? nullptr : &trophies_.trophies[size_t(it.index)];
     std::string status;
-    if (Earned(it)) status = "Earned " + Date(t ? t->earned : trophies_.last_earned, "%b %d, %Y");
-    else if (!t) status = std::to_string(trophies_.earnable - trophies_.earned) + " to go";
-    else if (t->online()) status = "Not available offline";
-    else status = "Not earned yet";
+    if (Earned(it)) status = T("Earned ", "Conquistado em ") + Date(t ? t->earned : trophies_.last_earned, T("%b %d, %Y", "%d de %b de %Y"));
+    else if (!t) status = std::to_string(trophies_.earnable - trophies_.earned) + T(" to go", " restantes");
+    else if (t->online()) status = T("Not available offline", "Indisponível offline");
+    else status = T("Not earned yet", "Ainda não conquistado");
     dl->AddText(g_body, 20 * u, ImVec2(dx, py), A(kDim, da), "STATUS");
     dl->AddText(g_body, 24 * u, ImVec2(dx + 170 * u, py - 2 * u), A(kWhite, da), status.c_str());
     if (t) {
@@ -1408,57 +1655,66 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
     const float tw = Width(g_title, 60 * u, "SAINTS ROW");
     Spaced(dl, g_item, 30 * u, ImVec2(x + tw + 22 * u, y + 24 * u), P(kRed), "REINSTATED", 6 * u);
     y += 84 * u;
-    entry("BY CHAOSTHEORY1075", "github.com/ChaosTheory1075/sr-ps5");
-    dl->AddText(g_body, 20 * u, ImVec2(x, y), P(kRed), "ALL THE CREDIT GOES TO");
+    entry(T("BY CHAOSTHEORY1075", "POR CHAOSTHEORY1075"), "github.com/ChaosTheory1075/sr-ps5");
+    dl->AddText(g_body, 20 * u, ImVec2(x, y), P(kRed), T("ALL THE CREDIT GOES TO", "TODO O CRÉDITO VAI PARA"));
     y += 40 * u;
     entry("GTA IV FOR PS5  -  ELRIPALDA",
-          "The PS5 port this one is built on, top to bottom: the PS5 runtime, graphics and sound, the hub this menu "
-          "copies, the trophies and their pop-up, and the installer payload. github.com/elripalda/gta4-ps5");
+          T("The PS5 port this one is built on, top to bottom: the PS5 runtime, graphics and sound, the hub this menu "
+          "copies, the trophies and their pop-up, and the installer payload. github.com/elripalda/gta4-ps5", "O port de PS5 em que este se baseia, de cima a baixo: o runtime do PS5, gráficos e som, o hub que "
+            "este menu copia, os troféus e o aviso deles, e o payload do instalador. "
+            "github.com/elripalda/gta4-ps5"));
     entry("LIBERTY RECOMPILED  -  OZORDI  /  VADUUR",
-          "OZORDI's recompilation of GTA IV and vaduur's LibertyRecompAndroid, which GTA IV for PS5 starts from.");
-    entry("REXGLUE AND XENIA",
-          "The static recompiler and runtime under all of it, and the Xenia team's Xbox 360 emulator it grew from "
-          "(Xenia Canary's XMA decoding is what plays the game's sound here).");
+          T("OZORDI's recompilation of GTA IV and vaduur's LibertyRecompAndroid, which GTA IV for PS5 starts from.", "A recompilação de GTA IV do OZORDI e o LibertyRecompAndroid do vaduur, de onde GTA IV for PS5 parte."));
+    entry(T("REXGLUE AND XENIA", "REXGLUE E XENIA"),
+          T("The static recompiler and runtime under all of it, and the Xenia team's Xbox 360 emulator it grew from "
+          "(Xenia Canary's XMA decoding is what plays the game's sound here).", "O recompilador estático e o runtime por baixo de tudo, e o emulador de Xbox 360 da equipe do Xenia "
+            "de onde ele nasceu (a decodificação XMA do Xenia Canary é o que toca o som do jogo aqui)."));
     entry("CRACKDOWN RECOMPILED  -  SAULOB",
-          "Whose ReXGlue patches and frame rate work this port's GPU and timing fixes come from. "
-          "github.com/saulob/crackdown-xbox360-recompiled");
+          T("Whose ReXGlue patches and frame rate work this port's GPU and timing fixes come from. "
+          "github.com/saulob/crackdown-xbox360-recompiled", "Dos patches de ReXGlue e do trabalho de taxa de quadros dele vêm as correções de GPU e de tempo "
+            "deste port. github.com/saulob/crackdown-xbox360-recompiled"));
     entry("MAX PAYNE 3 REPRESCRIBED  /  CRACKDOWN: REACTIVATED  /  METAL GEAR RISING REPLATINUM",
-          "The sister ports this one grew out of: the same menu, installer, saves and trophies, and their fixes.");
+          T("The sister ports this one grew out of: the same menu, installer, saves and trophies, and their fixes.", "Os ports irmãos de onde este nasceu: o mesmo menu, instalador, saves e troféus, e as suas correções."));
 
     const float px = 1060 * u + page_dx_, pw = size.x - 140 * u - px;
     float py = 180 * u;
     // the shout-out, on a panel of its own
     {
       const char* thanks =
-          "For Stilwater and the 3rd Street Saints: Julius, Johnny Gat, Troy, Dex, Shaundi, Pierce and Carlos, "
-          "the purple flag, and a city to take back block by block.";
+          T("For Stilwater and the 3rd Street Saints: Julius, Johnny Gat, Troy, Dex, Shaundi, Pierce and Carlos, "
+          "the purple flag, and a city to take back block by block.", "Por Stilwater e os 3rd Street Saints: Julius, Johnny Gat, Troy, Dex, Shaundi, Pierce e Carlos, a "
+            "bandeira roxa, e uma cidade para retomar quarteirão por quarteirão.");
       const float th = g_body->CalcTextSizeA(22 * u, FLT_MAX, pw - 48 * u, thanks).y;
       dl->AddRectFilled(ImVec2(px - 24 * u, py - 16 * u), ImVec2(px + pw, py + 96 * u + th),
                         P(IM_COL32(8, 8, 8, 170)), 6 * u);
       dl->AddRectFilled(ImVec2(px - 24 * u, py - 16 * u), ImVec2(px - 18 * u, py + 96 * u + th), P(kRed));
-      dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), "SPECIAL THANKS");
+      dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), T("SPECIAL THANKS", "AGRADECIMENTOS ESPECIAIS"));
       dl->AddText(g_item, 40 * u, ImVec2(px, py + 30 * u), P(kWhite), "VOLITION");
       dl->AddText(g_body, 22 * u, ImVec2(px, py + 84 * u), P(kGrey), thanks, nullptr, pw - 48 * u);
       py += 96 * u + th + 46 * u;
     }
     if (!song_.empty()) {
-      dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), "MENU SONG");
+      dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), T("MENU SONG", "MÚSICA DO MENU"));
       dl->AddText(g_body, 24 * u, ImVec2(px, py + 32 * u), P(kGrey), Fit(g_body, 24 * u, song_, pw).c_str());
       py += 90 * u;
     }
-    dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), "PLEASE NOTE");
+    dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), T("PLEASE NOTE", "OBSERVAÇÃO"));
     py += 36 * u;
     const char* note =
-        "An unofficial fan project, not affiliated with or endorsed by Deep Silver, Volition, THQ, Microsoft "
+        T("An unofficial fan project, not affiliated with or endorsed by Deep Silver, Volition, THQ, Microsoft "
         "or Sony. Saints Row and all related names belong to their owners. No game files are included: you need your "
-        "own copies of Saints Row and Saints Row 2 for the Xbox 360.";
+        "own copies of Saints Row and Saints Row 2 for the Xbox 360.", "Um projeto não oficial de fãs, sem ligação com nem aval da Deep Silver, Volition, THQ, Microsoft ou "
+          "Sony. Saints Row e todos os nomes relacionados pertencem aos seus donos. Nenhum arquivo dos jogos "
+          "está incluído: você precisa das suas próprias cópias de Saints Row e Saints Row 2 para o Xbox 360.");
     dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kGrey), note, nullptr, pw);
     py += g_body->CalcTextSizeA(20 * u, FLT_MAX, pw, note).y + 28 * u;
-    dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), "BUILT WITH");
+    dl->AddText(g_body, 20 * u, ImVec2(px, py), P(kRed), T("BUILT WITH", "FEITO COM"));
     py += 36 * u;
     dl->AddText(g_body, 19 * u, ImVec2(px, py), P(kGrey),
-                "PS5 Payload SDK  /  Mesa RADV (Vulkan)  /  Dear ImGui\nstb_image, dr_mp3, zlib, xxHash  /  Oswald and "
-                "Inter, Pirata One (SIL Open Font License)\nBlackBearReloaded's PS5 AT9 Converter (the home screen music)",
+                T("PS5 Payload SDK  /  Mesa RADV (Vulkan)  /  Dear ImGui\nstb_image, dr_mp3, zlib, xxHash  /  Oswald and "
+                "Inter, Pirata One (SIL Open Font License)\nBlackBearReloaded's PS5 AT9 Converter (the home screen music)", "PS5 Payload SDK  /  Mesa RADV (Vulkan)  /  Dear ImGui\nstb_image, dr_mp3, zlib, xxHash  /  Oswald e "
+                  "Inter, Pirata One (SIL Open Font License)\nPS5 AT9 Converter de BlackBearReloaded (a música da tela "
+                  "inicial)"),
                 nullptr, pw);
     dl->PopClipRect();
   }
@@ -1481,7 +1737,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       }
       if (auto src = gta4ps5::sound::Open(e.path())) {
         music_->Stop();
-        music_->SetVolume(settings_.music / 100.0f);
+        music_->SetVolume(sets_[1].music / 100.0f);
         music_->Play(std::move(src), true);
         song_ = e.path().stem().string();
         REXLOG_INFO("SAINTS ROW: ReInstated menu: playing {}", e.path().filename().string());
@@ -1506,7 +1762,10 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   rex::ui::ImmediateDrawer* immediate_ = nullptr;
   fs::path app_, user_data_[3];
   std::function<void(MenuChoice)> play_;
-  Settings settings_;
+  Settings sets_[3];  // each game's settings (1, 2)
+  int set_game_ = 1;      // SETTINGS: whose settings are shown
+  bool in_list_ = false;  // SETTINGS: in that game's settings (false: in the game list)
+  float reset_t_ = -100;  // (when SQUARE last put the recommended settings back)
   Pad pad_;
   Image background_[3], logo_[3], title_;  // (title_: hub/title.png, the header's logo)
   int game_ = 1, trophy_game_ = 1;

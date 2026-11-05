@@ -2,6 +2,7 @@
 // Max Payne 3 RePrescribed's and Metal Gear Rising RePlatinum's), for two games' discs and
 // Saints Row 2's DLC packs.
 #include "sr_install.h"
+#include "sr_text.h"
 #if REX_PLATFORM_PS5
 
 #include <algorithm>
@@ -231,14 +232,14 @@ class Copier {
     if (e->attributes() & rex::filesystem::kFileAttributeDirectory) return Children(e, dest, error);
     rex::filesystem::File* in = nullptr;
     if (e->Open(rex::filesystem::FileAccess::kFileReadData, &in) != X_STATUS_SUCCESS || !in) {
-      error = "couldn't read " + e->path();
+      error = T("couldn't read ", "não deu para ler ") + e->path();
       return false;
     }
     const size_t size = e->size();
     gta4::install::io::OutFile out;
     if (!out.Open(dest, &gather_, size)) {
       in->Destroy();
-      error = "couldn't write " + dest.string() + " (is the drive full?)";
+      error = T("couldn't write ", "não deu para gravar ") + dest.string() + T(" (is the drive full?)", " (o disco está cheio?)");
       return false;
     }
     size_t offset = 0;
@@ -262,7 +263,7 @@ class Copier {
     }
     const bool ok = out.Close() && written && offset == size;
     in->Destroy();
-    if (!ok) error = "couldn't copy " + e->path() + " (is the drive full?)";
+    if (!ok) error = T("couldn't copy ", "não deu para copiar ") + e->path() + T(" (is the drive full?)", " (o disco está cheio?)");
     return ok;
   }
 
@@ -332,7 +333,7 @@ bool EnoughSpace(const fs::path& app, uint64_t need, std::string& error) {
   std::error_code ec;
   const auto space = fs::space(app, ec);
   if (!ec && space.available < need + (256ull << 20)) {
-    error = "Not enough free space: it needs " + Gb(need) + ", the drive has " + Gb(space.available) + ".";
+    error = T("Not enough free space: it needs ", "Espaço livre insuficiente: precisa de ") + Gb(need) + T(", the drive has ", ", o disco tem ") + Gb(space.available) + ".";
     return false;
   }
   return true;
@@ -561,13 +562,13 @@ Ran ByPayload(const fs::path& app, const std::string& body, std::atomic<uint64_t
         std::string mark;
         ClearJob(dir);
         if (!ReadText(Staging(app) / ".token", mark) || mark != token) {
-          error = "the installed files aren't from this install";
+          error = T("the installed files aren't from this install", "os arquivos instalados não são desta instalação");
           return Ran::kFailed;
         }
         return Ran::kDone;
       }
       if (s.phase == "failed" || s.phase == "stopped") {
-        error = s.error.empty() ? std::string("the installer payload stopped with an error") : s.error;
+        error = s.error.empty() ? std::string(T("the installer payload stopped with an error", "o payload do instalador parou com um erro")) : s.error;
         ClearJob(dir);
         return Ran::kFailed;
       }
@@ -581,13 +582,13 @@ Ran ByPayload(const fs::path& app, const std::string& body, std::atomic<uint64_t
       }
       if (now - sent > std::chrono::seconds(45)) {
         WriteText(dir / "cancel", "stop\n");
-        error = "the installer payload didn't start";
+        error = T("the installer payload didn't start", "o payload do instalador não iniciou");
         return Ran::kFailed;
       }
     }
     if (running && now - changed > std::chrono::seconds(30)) {
       WriteText(dir / "cancel", "stop\n");
-      error = "the installer payload stopped answering";
+      error = T("the installer payload stopped answering", "o payload do instalador parou de responder");
       return Ran::kFailed;
     }
   }
@@ -601,7 +602,7 @@ bool TakeStaged(const fs::path& app, const std::string& rel, const fs::path& to,
   ec.clear();
   fs::rename(Staging(app) / rel, to, ec);
   if (ec) {
-    error = "couldn't move the installed files into place (" + ec.message() + ")";
+    error = T("couldn't move the installed files into place (", "não deu para mover os arquivos instalados para o lugar (") + ec.message() + ")";
     return false;
   }
   fs::remove_all(Staging(app), ec);
@@ -745,7 +746,7 @@ std::vector<Source> Scan(const fs::path& app) {
       if (!FindChild(p, "default.xex").empty()) {
         Source s{Kind::kGameFolder, p, p.filename().string() + "/"};
         s.game = GameFolderOf(p);
-        if (!s.game) s.kind = Kind::kOther, s.label += "  (not Saints Row's or Saints Row 2's disc)";
+        if (!s.game) s.kind = Kind::kOther, s.label += T("  (not Saints Row's or Saints Row 2's disc)", "  (não é o disco de Saints Row nem de Saints Row 2)");
         out.push_back(s);
         it.disable_recursion_pending();
       } else if (it.depth() >= 4) {
@@ -759,14 +760,14 @@ std::vector<Source> Scan(const fs::path& app) {
     if (ext == ".iso" || ext == ".xiso") {
       Source s{Kind::kGameImage, p, file};
       s.game = ImageGame(p);
-      if (!s.game) s.kind = Kind::kOther, s.label += "  (not Saints Row's or Saints Row 2's disc)";
+      if (!s.game) s.kind = Kind::kOther, s.label += T("  (not Saints Row's or Saints Row 2's disc)", "  (não é o disco de Saints Row nem de Saints Row 2)");
       out.push_back(s);
     } else if (ext == ".tpf") {
-      Source s{Kind::kTexturePack, p, "HD textures: " + p.parent_path().filename().string() + "/" + file};
+      Source s{Kind::kTexturePack, p, T("HD textures: ", "Texturas HD: ") + p.parent_path().filename().string() + "/" + file};
       if (!TexturePackOf(app, p, s.game, s.installed))
-        s.kind = Kind::kOther, s.label = file + "  (a texture pack this app doesn't know)";
+        s.kind = Kind::kOther, s.label = file + T("  (a texture pack this app doesn't know)", "  (um pacote de texturas que este app não conhece)");
       else
-        s.label = std::string(kGameNames[s.game]) + " HD textures: " + file;
+        s.label = std::string(kGameNames[s.game]) + T(" HD textures: ", " - texturas HD: ") + file;
       out.push_back(s);
     } else if (ext == ".7z" || ext == ".rar" || ext == ".zip" || ext == ".001" || ext == ".gz" || ext == ".tar") {
       out.push_back({Kind::kArchive, p, file});
@@ -774,7 +775,7 @@ std::vector<Source> Scan(const fs::path& app) {
       Header h;
       const int game = ReadHeader(p, h) ? GameOf(h.title) : 0;
       if (!game) {
-        out.push_back({Kind::kOther, p, file + "  (not a Saints Row or Saints Row 2 package)"});
+        out.push_back({Kind::kOther, p, file + T("  (not a Saints Row or Saints Row 2 package)", "  (não é um pacote de Saints Row nem de Saints Row 2)")});
         continue;
       }
       const std::string name = Narrow(h.name);
@@ -786,7 +787,7 @@ std::vector<Source> Scan(const fs::path& app) {
         rex::filesystem::Entry* xexp = root ? root->GetChild("default.xexp") : nullptr;
         if (!xexp || xexp->size() != kUpdateXexpSizes[game]) {
           s.kind = Kind::kOther;
-          s.label = (name.empty() ? file : name) + "  (not " + kUpdateNames[game] + ", the one this app needs)";
+          s.label = (name.empty() ? file : name) + T("  (not ", "  (não é o ") + kUpdateNames[game] + T(", the one this app needs)", ", o que este app precisa)");
         } else {
           s.installed = HasUpdate(GameFolder(app, game), game);
         }
@@ -845,7 +846,7 @@ bool Job::Start(std::string title, F&& work) {
     try {
       ok = work(result);
     } catch (const std::exception& e) {
-      result = std::string("Failed: ") + e.what();
+      result = std::string(T("Failed: ", "Falhou: ")) + e.what();
     }
     REXLOG_INFO("SAINTS ROW: ReInstated install: {} {}", ok ? "done:" : "FAILED:", result);
     {
@@ -865,7 +866,7 @@ bool Job::Install(const fs::path& app, const Source& source) {
   switch (source.kind) {
     case Kind::kGameImage:
     case Kind::kGameFolder:
-      return Start("Installing " + std::string(kGameNames[source.game]) + " from " + source.label,
+      return Start(T("Installing ", "Instalando ") + std::string(kGameNames[source.game]) + " from " + source.label,
                    [this, app, source](std::string& result) {
         std::error_code ec;
         const fs::path game = GameFolder(app, source.game);
@@ -874,12 +875,12 @@ bool Job::Install(const fs::path& app, const Source& source) {
         if (source.kind == Kind::kGameImage) {
           rex::filesystem::DiscImageDevice disc("\\Device\\SrInstall", source.path);
           if (!disc.Initialize()) {
-            result = source.label + " isn't an Xbox 360 disc image.";
+            result = source.label + T(" isn't an Xbox 360 disc image.", " não é uma imagem de disco de Xbox 360.");
             return false;
           }
           rex::filesystem::Entry* root = disc.ResolvePath("");
           if (!root) {
-            result = "Couldn't read " + source.label + ".";
+            result = T("Couldn't read ", "Não deu para ler ") + source.label + ".";
             return false;
           }
           total_ = TotalSize(root);
@@ -900,13 +901,13 @@ bool Job::Install(const fs::path& app, const Source& source) {
             ok = Copier(done_).Children(root, tmp, error);
           if (!ok) {
             fs::remove_all(tmp, ec);
-            result = "Installing from " + source.label + " failed: " + error;
+            result = T("Installing from ", "A instalação de ") + source.label + T(" failed: ", " falhou: ") + error;
             return false;
           }
         } else {
           fs::rename(source.path, tmp, ec);
           if (ec) {
-            result = "Couldn't move " + source.label + " (" + ec.message() + ").";
+            result = T("Couldn't move ", "Não deu para mover ") + source.label + " (" + ec.message() + ").";
             return false;
           }
         }
@@ -920,7 +921,7 @@ bool Job::Install(const fs::path& app, const Source& source) {
           } else {
             fs::remove_all(tmp, ec);
           }
-          result = source.label + " isn't " + kGameNames[source.game] + "'s disc.";
+          result = source.label + T(" isn't ", " não é o disco de ") + kGameNames[source.game] + T("'s disc.", ".");
           return false;
         }
         // (a title update already installed stays: into the new folder)
@@ -932,19 +933,19 @@ bool Job::Install(const fs::path& app, const Source& source) {
         fs::remove_all(game, ec);
         fs::rename(tmp, game, ec);
         if (ec) {
-          result = "Couldn't put the game in place (" + ec.message() + ").";
+          result = T("Couldn't put the game in place (", "Não deu para colocar o jogo no lugar (") + ec.message() + ").";
           return false;
         }
         if (source.kind == Kind::kGameImage) Leftover(source.path);
-        result = std::string(kGameNames[source.game]) + " is installed.";
+        result = std::string(kGameNames[source.game]) + T(" is installed.", " está instalado.");
         return true;
       });
     case Kind::kUpdate:
-      return Start("Installing " + source.label, [this, app, source](std::string& result) {
+      return Start(T("Installing ", "Instalando ") + source.label, [this, app, source](std::string& result) {
         std::error_code ec;
         const fs::path game = GameFolder(app, source.game);
         if (FindChild(game, "default.xex").empty()) {
-          result = std::string("Install ") + kGameNames[source.game] + "'s disc first, then its title update.";
+          result = std::string(T("Install ", "Instale primeiro o disco de ")) + kGameNames[source.game] + T("'s disc first, then its title update.", ", depois o title update.");
           return false;
         }
         const fs::path tmp = game / "update.installing";
@@ -952,7 +953,7 @@ bool Job::Install(const fs::path& app, const Source& source) {
         rex::filesystem::StfsContainerDevice package("\\Device\\SrUpdate", source.path);
         rex::filesystem::Entry* root = package.Initialize() ? package.ResolvePath("") : nullptr;
         if (!root) {
-          result = "Couldn't read " + source.label + ".";
+          result = T("Couldn't read ", "Não deu para ler ") + source.label + ".";
           return false;
         }
         total_ = TotalSize(root);
@@ -960,7 +961,7 @@ bool Job::Install(const fs::path& app, const Source& source) {
         if (!EnoughSpace(app, total_, result)) return false;
         if (!Copier(done_).Children(root, tmp, error)) {
           fs::remove_all(tmp, ec);
-          result = "Installing " + source.label + " failed: " + error;
+          result = T("Installing ", "Instalando ") + source.label + T(" failed: ", " falhou: ") + error;
           return false;
         }
         // default.xexp beside default.xex; the update's other files (Saints Row 2's patched
@@ -968,7 +969,7 @@ bool Job::Install(const fs::path& app, const Source& source) {
         const fs::path xexp = FindChild(tmp, "default.xexp");
         if (xexp.empty() || fs::file_size(xexp, ec) != kUpdateXexpSizes[source.game]) {
           fs::remove_all(tmp, ec);
-          result = source.label + " isn't " + kUpdateNames[source.game] + ".";
+          result = source.label + T(" isn't ", " não é o disco de ") + kUpdateNames[source.game] + ".";
           return false;
         }
         const fs::path old_xexp = FindChild(game, "default.xexp"), old_update = FindChild(game, "update");
@@ -978,19 +979,19 @@ bool Job::Install(const fs::path& app, const Source& source) {
         fs::rename(xexp, game / "default.xexp", ec);
         if (!ec) fs::rename(tmp, game / "update", ec);
         if (ec) {
-          result = "Couldn't put the title update in place (" + ec.message() + ").";
+          result = T("Couldn't put the title update in place (", "Não deu para colocar a atualização no lugar (") + ec.message() + ").";
           return false;
         }
         Leftover(source.path);
-        result = source.label + " is installed.";
+        result = source.label + T(" is installed.", " está instalado.");
         return true;
       });
     case Kind::kDlc:
-      return Start("Installing " + source.label, [this, app, source](std::string& result) {
+      return Start(T("Installing ", "Instalando ") + source.label, [this, app, source](std::string& result) {
         std::error_code ec;
         const std::string name = ContentName(source.path, kTitleIds[source.game]);
         if (name.empty()) {
-          result = "Couldn't read " + source.label + ".";
+          result = T("Couldn't read ", "Não deu para ler ") + source.label + ".";
           return false;
         }
         const fs::path dest = DlcFolder(app, source.game) / name;
@@ -999,7 +1000,7 @@ bool Job::Install(const fs::path& app, const Source& source) {
         rex::filesystem::StfsContainerDevice package("\\Device\\SrDlc", source.path);
         rex::filesystem::Entry* root = package.Initialize() ? package.ResolvePath("") : nullptr;
         if (!root) {
-          result = "Couldn't read " + source.label + ".";
+          result = T("Couldn't read ", "Não deu para ler ") + source.label + ".";
           return false;
         }
         total_ = TotalSize(root);
@@ -1009,21 +1010,21 @@ bool Job::Install(const fs::path& app, const Source& source) {
         const bool copied = ran == Ran::kDone || (ran == Ran::kUnavailable && Copier(done_).Children(root, tmp, error));
         if (!copied) {
           fs::remove_all(tmp, ec);
-          result = "Installing " + source.label + " failed: " + error;
+          result = T("Installing ", "Instalando ") + source.label + T(" failed: ", " falhou: ") + error;
           return false;
         }
         fs::remove_all(dest, ec);
         fs::rename(tmp, dest, ec);
         if (ec) {
-          result = "Couldn't put the DLC in place (" + ec.message() + ").";
+          result = T("Couldn't put the DLC in place (", "Não deu para colocar a DLC no lugar (") + ec.message() + ").";
           return false;
         }
         Leftover(source.path);
-        result = source.label + " is installed.";
+        result = source.label + T(" is installed.", " está instalado.");
         return true;
       });
     case Kind::kSave:
-      return Start("Importing the save " + source.label, [this, app, source](std::string& result) {
+      return Start(T("Importing the save ", "Importando o save ") + source.label, [this, app, source](std::string& result) {
         std::error_code ec;
         // Into saves/_import/, moved into the game's profile when it starts (PlacePendingSaves): the
         // runtime makes its profile (a random XUID, its saves' folder) on its first start, so an
@@ -1043,14 +1044,14 @@ bool Job::Install(const fs::path& app, const Source& source) {
         rex::filesystem::StfsContainerDevice package("\\Device\\SrSave", source.path);
         rex::filesystem::Entry* root = package.Initialize() ? package.ResolvePath("") : nullptr;
         if (!root || GameOf(h.title) != source.game) {
-          result = "Couldn't read the save " + source.label + ".";
+          result = T("Couldn't read the save ", "Não deu para ler o save ") + source.label + ".";
           return false;
         }
         total_ = TotalSize(root);
         std::string error;
         if (!Copier(done_).Children(root, tmp, error)) {
           fs::remove_all(tmp, ec);
-          result = "Importing " + source.label + " failed: " + error;
+          result = T("Importing ", "A importação de ") + source.label + T(" failed: ", " falhou: ") + error;
           return false;
         }
         fs::remove_all(dest, ec);
@@ -1069,28 +1070,30 @@ bool Job::Install(const fs::path& app, const Source& source) {
         std::ofstream(headers / (name + ".header"), std::ios::binary)
             .write(reinterpret_cast<const char*>(&data), sizeof(data));
         RemoveSource(source.path);
-        result = "Imported the save " + source.label + " as " + name + ". The game loads it when you PLAY.";
+        result = T("Imported the save ", "Save importado: ") + source.label + T(" as ", ", como ") + name + T(". The game loads it when you PLAY.", ". O jogo o carrega quando você JOGAR.");
         return true;
       });
     case Kind::kBackup:
-      return Start("Restoring " + source.label, [app, source](std::string& result) {
+      return Start(T("Restoring ", "Restaurando ") + source.label, [app, source](std::string& result) {
         std::error_code ec;
         const auto options = fs::copy_options::recursive | fs::copy_options::overwrite_existing;
         for (const char* what : {"saves", "UserData"}) {
           if (!fs::exists(source.path / what, ec)) continue;
           fs::copy(source.path / what, app / what, options, ec);
           if (ec) {
-            result = "Restoring " + source.label + " failed (" + ec.message() + ").";
+            result = T("Restoring ", "Restaurando ") + source.label + T(" failed (", " falhou (") + ec.message() + ").";
             return false;
           }
         }
-        if (fs::exists(source.path / "menu.ini", ec))
-          fs::copy_file(source.path / "menu.ini", app / "menu.ini", fs::copy_options::overwrite_existing, ec);
-        result = "Restored the backup " + source.label + ".";
+        // (the settings: menu.ini, and each game's own, menu1.ini / menu2.ini)
+        for (const char* ini : {"menu.ini", "menu1.ini", "menu2.ini"})
+          if (fs::exists(source.path / ini, ec))
+            fs::copy_file(source.path / ini, app / ini, fs::copy_options::overwrite_existing, ec);
+        result = T("Restored the backup ", "Backup restaurado: ") + source.label + ".";
         return true;
       });
     case Kind::kTexturePack:
-      return Start("Installing " + source.label, [this, app, source](std::string& result) {
+      return Start(T("Installing ", "Instalando ") + source.label, [this, app, source](std::string& result) {
         if (!EnoughSpace(app, TexturePackBytes(app, source.path), result)) return false;
         if (!InstallTexturePack(app, source.path, done_, total_, result)) return false;
         Leftover(source.path);
@@ -1104,9 +1107,9 @@ bool Job::Install(const fs::path& app, const Source& source) {
 bool Job::Uninstall(const fs::path& app, Remove what) {
   const char* name = what == Remove::kGame1   ? "Saints Row"
                      : what == Remove::kGame2 ? "Saints Row 2"
-                     : what == Remove::kDlc   ? "the DLC"
-                                              : "the HD textures";
-  return Start(std::string("Removing ") + name, [app, what, name](std::string& result) {
+                     : what == Remove::kDlc   ? T("the DLC", "as DLCs")
+                                              : T("the HD textures", "as texturas HD");
+  return Start(std::string(T("Removing ", "Removendo ")) + name, [app, what, name](std::string& result) {
     std::error_code ec;
     switch (what) {
       case Remove::kGame1:
@@ -1123,13 +1126,13 @@ bool Job::Uninstall(const fs::path& app, Remove what) {
         fs::remove_all(app / "textures", ec);
         break;
     }
-    result = std::string("Removed ") + name + ".";
+    result = std::string(T("Removed ", "Removido: ")) + name + ".";
     return !ec;
   });
 }
 
 bool Job::Backup(const fs::path& app) {
-  return Start("Backing up the saves", [app](std::string& result) {
+  return Start(T("Backing up the saves", "Fazendo backup dos saves"), [app](std::string& result) {
     char stamp[32];
     const std::time_t now = std::time(nullptr);
     std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", std::localtime(&now));
@@ -1145,14 +1148,15 @@ bool Job::Backup(const fs::path& app) {
         fs::copy(trophies, dest / "UserData" / user / "achievements", options, ec);
       }
     }
-    if (!ec && fs::exists(app / "menu.ini", ec)) fs::copy_file(app / "menu.ini", dest / "menu.ini", ec);
+    for (const char* ini : {"menu.ini", "menu1.ini", "menu2.ini"})
+      if (!ec && fs::exists(app / ini, ec)) fs::copy_file(app / ini, dest / ini, ec);
     if (ec) {
-      result = "The backup failed (" + ec.message() + ").";
+      result = T("The backup failed (", "O backup falhou (") + ec.message() + ").";
       return false;
     }
     std::ofstream(dest / kBackupMarker) << "SAINTS ROW: ReInstated backup: saves/, trophies (UserData/) and "
                                            "menu.ini.\nRestore it from the menu's SAVES page.\n";
-    result = "Backed up to install/backups/" + dest.filename().string() + ".";
+    result = T("Backed up to install/backups/", "Backup feito em install/backups/") + dest.filename().string() + ".";
     return true;
   });
 }
@@ -1183,14 +1187,14 @@ bool Job::DeleteLeftovers(const fs::path& app) {
     std::lock_guard<std::mutex> lock(mutex_);
     leftovers_.clear();
   }
-  return Start("Deleting the installed files from install/", [files](std::string& result) {
+  return Start(T("Deleting the installed files from install/", "Apagando os arquivos já instalados de install/"), [files](std::string& result) {
     uint64_t freed = 0;
     for (const fs::path& f : files) {
       std::error_code ec;
       const uint64_t size = fs::file_size(f, ec);
       if (fs::remove(f, ec) && !ec) freed += size;
     }
-    result = "Deleted the installed files from install/ (" + Gb(freed) + " freed).";
+    result = T("Deleted the installed files from install/ (", "Arquivos já instalados apagados de install/ (") + Gb(freed) + T(" freed).", " liberados).");
     return true;
   });
 }

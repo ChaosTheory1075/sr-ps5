@@ -16,6 +16,9 @@ namespace srps5 {
 // Installs the file read hook (once): patches while sr_ps_prompts is on.
 void InstallPrompts();
 
+// The build has the games' text in Brazilian Portuguese (ptbr<N>.bin, sr_ptbr).
+bool HasPortuguese();
+
 }  // namespace srps5
 
 #endif  // REX_PLATFORM_PS5

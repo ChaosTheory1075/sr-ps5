@@ -32,10 +32,17 @@ function(sr_game game)
             set(sr_prompts_bin "${CMAKE_CURRENT_BINARY_DIR}/prompts${game}-none.bin")
             file(WRITE "${sr_prompts_bin}" "")
         endif()
-        set_property(SOURCE src/ps5/sr_prompts.cpp APPEND PROPERTY OBJECT_DEPENDS "${sr_prompts_bin}")
+        # The games' text in Brazilian Portuguese (ptbr<N>.bin from Downloads/Recomps/ptbr/sr/build<N>.py,
+        # made from the user's game files, next to prompts<N>.bin); without it, an empty blob.
+        set(sr_ptbr_bin "${SR_PROMPTS_DIR}/ptbr${game}.bin")
+        if(NOT EXISTS "${sr_ptbr_bin}")
+            set(sr_ptbr_bin "${CMAKE_CURRENT_BINARY_DIR}/ptbr${game}-none.bin")
+            file(WRITE "${sr_ptbr_bin}" "")
+        endif()
+        set_property(SOURCE src/ps5/sr_prompts.cpp APPEND PROPERTY OBJECT_DEPENDS "${sr_prompts_bin}" "${sr_ptbr_bin}")
         add_executable(${target} ${app_sources} ${GENERATED_SOURCES})
         target_compile_definitions(${target} PRIVATE SR_GAME=${game} SR_GAME_HOOKS=0 "SR_INIT_H=\"sr${game}_init.h\""
-            "SRPS5_FONTS_DIR=\"${SR_PS5_FONTS}\"" "SRPS5_PROMPTS_BIN=\"${sr_prompts_bin}\"")
+            "SRPS5_FONTS_DIR=\"${SR_PS5_FONTS}\"" "SRPS5_PROMPTS_BIN=\"${sr_prompts_bin}\"" "SRPS5_PTBR_BIN=\"${sr_ptbr_bin}\"")
         target_include_directories(${target} PRIVATE "${GTA4_PS5_SRC}")
         # The recompiled game's own files, as gta4-recomp marks GTA IV's.
         set(guest_sources ${GENERATED_SOURCES})

@@ -28,6 +28,7 @@
 
 #include "sr_lua.h"
 #include "sr_menu.h"
+#include "sr_text.h"
 
 #include SR_INIT_H
 
@@ -86,6 +87,11 @@ void Filter(uint8_t* base, uint32_t state) {
   if (ly > kStickDeadzone) buttons |= kUp;  // (the left stick as the D-pad)
   if (ly < -kStickDeadzone) buttons |= kDown;
   const uint16_t pressed = buttons & ~g_previous;
+  // (the log: the first read, and the first presses of L3 / R3 - whether the combo reaches here)
+  static std::atomic<int> reads{0}, stick_presses{0};
+  if (reads.fetch_add(1) == 0) REXLOG_INFO("Quick menu: reading the controller (CHEAT MENU {})", REXCVAR_GET(sr_quick_menu) ? "on" : "off");
+  if ((pressed & (kL3 | kR3)) && stick_presses.fetch_add(1) < 20)
+    REXLOG_INFO("Quick menu: {}{} pressed (held {:04X})", (pressed & kL3) ? "L3" : "", (pressed & kR3) ? "R3" : "", buttons);
   const bool combo = (buttons & (kL3 | kR3)) == (kL3 | kR3);
   const bool combo_pressed = combo && (pressed & (kL3 | kR3));
   g_previous = buttons;
@@ -127,6 +133,8 @@ constexpr CheatInfo kCheats[kCheatCount] = {
     {"no_cops", "No Police Notoriety", true},
     {"enemies_ignore_you", "Enemies Ignore You", true},
 };
+// (their names in the menu's Portuguese, in kCheats' order)
+constexpr const char* kCheatsPt[kCheatCount] = {"Modo Deus", "Sem notoriedade com a polícia", "Inimigos ignoram você"};
 std::array<std::atomic<bool>, kCheatCount> g_on{};
 std::atomic<uint32_t> g_generation{1};  // (changed with any cheat: the tick puts them all again)
 
@@ -258,17 +266,17 @@ std::vector<Row> Rows() {
   bool first = true;
   for (int i = 0; i < kCheatCount; ++i) {
     if (!Available(i)) continue;
-    rows.push_back({first ? "CHEATS" : nullptr, kCheats[i].label, kRowCheat, i});
+    rows.push_back({first ? T("CHEATS", "TRAPAÇAS") : nullptr, T(kCheats[i].label, kCheatsPt[i]), kRowCheat, i});
     first = false;
   }
-  rows.push_back({"ACTIONS", "Clear Notoriety", kRowAction, kClearNotoriety});
+  rows.push_back({T("ACTIONS", "AÇÕES"), T("Clear Notoriety", "Limpar notoriedade"), kRowAction, kClearNotoriety});
 #if SR_GAME == 2
   // (Saints Row's scripts have no cash_add or hud_hide)
-  rows.push_back({nullptr, "Give $10,000", kRowAction, kCash});
-  rows.push_back({nullptr, "Show / Hide HUD", kRowAction, kToggleHud});
+  rows.push_back({nullptr, T("Give $10,000", "Ganhar $10.000"), kRowAction, kCash});
+  rows.push_back({nullptr, T("Show / Hide HUD", "Mostrar / esconder HUD"), kRowAction, kToggleHud});
 #endif
-  rows.push_back({"DISPLAY", "FPS Counter", kRowFps, 0});
-  rows.push_back({"CONTROLLER", "DualSense Features", kRowDualSense, 0});
+  rows.push_back({T("DISPLAY", "TELA"), T("FPS Counter", "Contador de FPS"), kRowFps, 0});
+  rows.push_back({T("CONTROLLER", "CONTROLE"), T("DualSense Features", "Recursos do DualSense"), kRowDualSense, 0});
   return rows;
 }
 
@@ -279,10 +287,10 @@ int CounterMode() {
 
 std::string ValueOf(const Row& row) {
   switch (row.kind) {
-    case kRowCheat: return g_on[row.index].load() ? "ON" : "OFF";
-    case kRowAction: return "PRESS X";
-    case kRowFps: return CounterMode() == 2 ? "DETAILED" : CounterMode() == 1 ? "SIMPLE" : "OFF";
-    case kRowDualSense: return rex::input::sony::GetOptions().enabled ? "ON" : "OFF";
+    case kRowCheat: return g_on[row.index].load() ? T("ON", "LIGADO") : T("OFF", "DESLIGADO");
+    case kRowAction: return T("PRESS X", "APERTE X");
+    case kRowFps: return CounterMode() == 2 ? T("DETAILED", "DETALHADO") : CounterMode() == 1 ? T("SIMPLE", "SIMPLES") : T("OFF", "DESLIGADO");
+    case kRowDualSense: return rex::input::sony::GetOptions().enabled ? T("ON", "LIGADO") : T("OFF", "DESLIGADO");
   }
   return "";
 }
@@ -372,7 +380,7 @@ void QuickMenu::OnDraw(ImGuiIO& io) {
   dl->AddRectFilled(ImVec2(0, 0), size, Fade(IM_COL32(0, 0, 0, 110), a));
   dl->AddRectFilled(ImVec2(x, y0), ImVec2(x + w, y0 + h), Fade(IM_COL32(10, 9, 9, 235), a), 10 * u);
   dl->AddRectFilled(ImVec2(x, y0), ImVec2(x + 8 * u, y0 + h), Fade(kAccent, a), 10 * u, ImDrawFlags_RoundCornersLeft);
-  dl->AddText(item, 46 * u, ImVec2(x + 40 * u, y0 + 26 * u), Fade(kWhite, a), "QUICK MENU");
+  dl->AddText(item, 46 * u, ImVec2(x + 40 * u, y0 + 26 * u), Fade(kWhite, a), T("QUICK MENU", "MENU RÁPIDO"));
   dl->AddText(body, 20 * u, ImVec2(x + 330 * u, y0 + 44 * u), Fade(kGrey, a),
               SR_GAME == 2 ? "SAINTS ROW 2" : "SAINTS ROW");
   float y = y0 + 100 * u;
@@ -396,7 +404,7 @@ void QuickMenu::OnDraw(ImGuiIO& io) {
     y += row_h;
   }
   dl->AddText(body, 20 * u, ImVec2(x + 40 * u, y0 + h - 46 * u), Fade(kGrey, a),
-              "UP DOWN  MOVE      LEFT RIGHT / X  CHANGE      O / L3+R3  CLOSE");
+              T("UP DOWN  MOVE      LEFT RIGHT / X  CHANGE      O / L3+R3  CLOSE", "CIMA BAIXO  MOVER      ESQ. DIR. / X  MUDAR      O / L3+R3  FECHAR"));
 }
 
 void StartQuickMenu(rex::ui::ImGuiDrawer* drawer) {
