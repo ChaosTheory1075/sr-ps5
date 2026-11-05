@@ -1132,6 +1132,15 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "        fetch[3] = (fetch[3] & ~(UINT32_C(0x3F) << 13)) | ((uint32_t(exp_adjust) & 0x3F) << 13);\n"
          "      }\n")
 
+    # Every deferred overlapped call (XamContentCreate ...) slept a fixed 100 ms on the host task
+    # thread before it completed. Saints Row mounts its 5 DLC packages one after another while
+    # the main thread waits on the loader thread: a 502 ms hitch (sr1_038, 12:22:45). The call
+    # still returns ERROR_IO_PENDING and completes later on the host task thread; only the wait
+    # before it is shorter.
+    edit(sdk / "src" / "system" / "kernel_state.cpp",
+         "constexpr uint32_t kDeferredOverlappedDelayMillis = 100;",
+         "constexpr uint32_t kDeferredOverlappedDelayMillis = 1;  // [sr] was 100")
+
     # Readback only what the CPU reads: "fast" copied every resolve of every
     # frame back (55 a frame, ~40 MB with the 7.5 MB HDR copies) and memcpy'd
     # it into guest memory on the GPU thread. The game's CPU reads are its

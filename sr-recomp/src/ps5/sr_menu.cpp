@@ -169,7 +169,6 @@ struct Settings {
   bool dualsense = true;   // the light bar and R2 (gta4_sony_enabled: sr_dualsense.h)
   bool ps_prompts = true;  // PlayStation button prompts (sr_ps_prompts: sr_prompts.h)
   bool skip_intro = true;  // the THQ and Volition logo movies (sr_skip_intro: sr_intro.cpp)
-  bool radnet = true;      // (Prototype 2's Radnet setting, kept in menu.ini: not used here)
   int language = 0;  // LANGUAGE: 0 AUTO (the PS5's own: SystemLanguage), or the Xbox 360's language ID: kLanguages
 
   struct Language {
@@ -223,7 +222,7 @@ struct Settings {
     Settings s;
     s.aa = 2, s.fsr = true, s.sharpness = 3, s.host_rts = false, s.cheat_menu = false, s.dualsense_strength = 3;
     s.filter = 5, s.lane = true, s.fps = 1, s.dualsense = true, s.ps_prompts = true, s.skip_intro = true;
-    s.radnet = true, s.fps60 = true, s.language = 0;
+    s.fps60 = true, s.language = 0;
     s.music = now.music, s.game = now.game;
     return s;
   }
@@ -255,7 +254,6 @@ struct Settings {
         if (k == "dualsense") s.dualsense = value != 0;
         if (k == "ps_prompts") s.ps_prompts = value != 0;
         if (k == "skip_intro") s.skip_intro = value != 0;
-        if (k == "radnet") s.radnet = value != 0;
         if (k == "language") s.language = kLanguages[LanguageIndex(value)].id;
       }
       std::fclose(f);
@@ -269,9 +267,9 @@ struct Settings {
                    "anti_aliasing = %d\nupscaling_fsr = %d\nfsr_sharpness = %d\nrenderer_fast = %d\ncheat_menu = %d\n"
                    "dualsense_strength = %d\n"
                    "texture_filtering = %d\ngpu_lane = %d\nmenu_music = %d\ngame = %d\nfps_counter = %d\n"
-                   "dualsense = %d\nps_prompts = %d\nskip_intro = %d\nradnet = %d\nframe_rate = %d\nlanguage = %d\n",
+                   "dualsense = %d\nps_prompts = %d\nskip_intro = %d\nframe_rate = %d\nlanguage = %d\n",
                    aa, fsr ? 1 : 0, sharpness, host_rts ? 1 : 0, cheat_menu ? 1 : 0, dualsense_strength, filter, lane ? 1 : 0, music, game, fps, dualsense ? 1 : 0, ps_prompts ? 1 : 0,
-                   skip_intro ? 1 : 0, radnet ? 1 : 0, fps60 ? 60 : 30, language);
+                   skip_intro ? 1 : 0, fps60 ? 60 : 30, language);
       std::fclose(f);
     }
   }
@@ -318,11 +316,11 @@ struct Settings {
     rex::cvar::SetFlagByName("user_language",
                              std::to_string(pt_text ? carrier : lang.id == kPortuguese || (SR_GAME == 1 && !lang.p1) ? 1 : lang.id));
     REXLOG_INFO("SAINTS ROW: ReInstated menu: frame rate {}, upscaling {} (sharpness {}), anti-aliasing {}, texture filtering {}, the GPU's second lane {}, "
-                "frame rate counter {}, DualSense features {}, button prompts {}, skip intro {}, Radnet events {}, "
+                "frame rate counter {}, DualSense features {}, button prompts {}, skip intro {}, cheat menu {}, renderer {}, "
                 "language {}",
                 fps60 ? 60 : 30, fsr ? "FSR 1" : "bilinear", kSharpnessNames[sharpness], kAaNames[aa], kFilterNames[filter], lane ? "on" : "off", kFpsModes[fps],
-                dualsense ? "on" : "off", ps_prompts ? "PlayStation" : "Xbox", skip_intro ? "on" : "off",
-                radnet ? "unlocked" : T("as on the disc", "como no disco"), lang.name);
+                dualsense ? "on" : "off", ps_prompts ? "PlayStation" : "Xbox", skip_intro ? "on" : "off", cheat_menu ? "on" : "off", host_rts ? "FAST" : "ACCURATE",
+                lang.name);
   }
 };
 
@@ -795,10 +793,8 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
                        "circle, square, triangle, L1, R1...) or as the Xbox 360's.", "Os botões que os jogos mostram - em dicas, menus e golpes - como os do DualSense (xis, círculo, "
                          "quadrado, triângulo, L1, R1...) ou como os do Xbox 360.")};
     lines[kDualSense] = {"CONTROLLER", "DUALSENSE FEATURES", s.dualsense ? T("ON", "LIGADO") : T("OFF", "DESLIGADO"), true,
-                         T("The light bar in the Saints' purple, dimming as you're hurt and blinking when you're close "
-                         "to death, and a pulse when you're hit. The games' own rumble plays either way. (In the game: "
-                         "L3 + R3 opens the quick menu, with the cheats.)", "A barra de luz no roxo dos Saints, escurecendo quando você se fere e piscando quando está perto da "
-                           "morte, e um pulso quando você é atingido. A vibração dos próprios jogos funciona de qualquer jeito. "
+                         T("The light bar in the Saints' purple. The games' own rumble plays either way. (In the game: "
+                         "L3 + R3 opens the quick menu, with the cheats.)", "A barra de luz no roxo dos Saints. A vibração dos próprios jogos funciona de qualquer jeito. "
                            "(No jogo: L3 + R3 abre o menu rápido, com as trapaças.)")};
     lines[kLanguage] = {T("GAME", "JOGO"), T("LANGUAGE", "IDIOMA"), s.language ? std::string(TW(Settings::kLanguages[Settings::LanguageIndex(s.language)].name))
                    : std::string("AUTO (") + TW(Settings::kLanguages[Settings::LanguageIndex(s.Effective())].name) + ")",
