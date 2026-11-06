@@ -3318,6 +3318,8 @@ class SrSubmitThread {
 
     # The draw profile (gpu_draw_profile, from MGR): each step of a draw timed, every 10 s.
     draw_profile(sdk)
+    # Constant writes that change no value invalidate nothing (gpu_skip_unchanged_writes, from MGR).
+    skip_unchanged_writes(sdk)
 
 def draw_profile(sdk):
     """(From Metal Gear Rising: Revengeance mgr-ps5 6b7d5c1.) What one draw costs on the GPU command thread (cvar gpu_draw_profile, rex/<port>_perf.h).
@@ -3409,6 +3411,140 @@ def draw_profile(sdk):
          "        prev_ticks = ticks;\n"
          "        prev_clock = clock;\n"
          "      }\n")
+
+
+def skip_unchanged_writes(sdk):
+    """(From Metal Gear Rising: Revengeance mgr-ps5 45528e6.) Constant register writes that change nothing invalidate nothing (cvar gpu_skip_unchanged_writes).
+
+    Xbox 360 games rewrite whole blocks of shader constants (float, bool / loop) and fetch
+    constants before most draws, mostly with the values already there. Each such write threw away
+    the uploaded constant buffer (the next draw allocated, copied and re-bound it), and for fetch
+    constants re-derived every texture binding's key and the vertex buffers' residency. Here a write
+    is compared with the register file while it is copied in: when no value differs nothing is
+    invalidated, and when some do only the changed span is. Every cache it skips would be rebuilt from
+    the same register values, so what the GPU draws is identical to the pixel.
+    0: off, 1: on, 2: on and off in alternate 10 s windows (the same scene measured both ways).
+    Needs draw_profile()'s report and the kConstWrite / kConstSkip counters of <port>_perf.h.
+    """
+    vcp = sdk / "src" / "graphics" / "vulkan" / "command_processor.cpp"
+    P = "rex::sr_perf::"
+    edit(vcp,
+         "REXCVAR_DEFINE_BOOL(gpu_draw_profile, false, \"GPU\",\n",
+         "REXCVAR_DEFINE_INT32(gpu_skip_unchanged_writes, 0, \"GPU\",\n"
+         "                     \"Constant register writes that change no value invalidate nothing (0 off, 1 on, \"\n"
+         "                     \"2 on and off in alternate 10 s windows, to measure it)\")\n"
+         "    .range(0, 2);\n"
+         "REXCVAR_DEFINE_BOOL(gpu_draw_profile, false, \"GPU\",\n")
+    edit(vcp,
+         "void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {\n"
+         "  CommandProcessor::WriteRegister(index, value);\n",
+         "// [perf] gpu_skip_unchanged_writes: whether it is on now\n"
+         "static bool SrSkipOn() {\n"
+         "  const int32_t mode = REXCVAR_GET(gpu_skip_unchanged_writes);\n"
+         f"  return mode == 1 || (mode == 2 && {P}g_skip_window_on);\n"
+         "}\n"
+         "// [perf] Copies the guest's (big-endian) values into the registers; the span of those that changed\n"
+         "// in lo..hi, false when none did.\n"
+         "static bool SrCopyChanged(uint32_t* dst, const uint32_t* src, uint32_t count, uint32_t& lo,\n"
+         "                           uint32_t& hi) {\n"
+         "  lo = UINT32_MAX, hi = 0;\n"
+         "  for (uint32_t i = 0; i < count; ++i) {\n"
+         "    const uint32_t value = memory::load_and_swap<uint32_t>(src + i);\n"
+         "    if (dst[i] != value) {\n"
+         "      dst[i] = value;\n"
+         "      if (lo == UINT32_MAX) lo = i;\n"
+         "      hi = i;\n"
+         "    }\n"
+         "  }\n"
+         "  return lo != UINT32_MAX;\n"
+         "}\n"
+         "\n"
+         "void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {\n"
+         "  if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X && index <= XE_GPU_REG_SHADER_CONSTANT_LOOP_31 &&\n"
+         "      (index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5 ||\n"
+         "       index >= XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031)) {\n"
+         f"    {P}CountOnGpuThread({P}kConstWrite);  // [perf] a constant written with its own value: nothing to do\n"
+         "    if (SrSkipOn() && register_file_->values[index] == value) {\n"
+         f"      {P}CountOnGpuThread({P}kConstSkip);\n"
+         "      return;\n"
+         "    }\n"
+         "  }\n"
+         "  CommandProcessor::WriteRegister(index, value);\n")
+    # float constants: only the changed span is checked against the shaders' constant maps
+    edit(vcp,
+         "    memory::copy_and_swap(register_file_->values + start_index, base, num_registers);\n"
+         "    if (frame_open_) {\n"
+         "      uint32_t first_float_constant = (start_index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;\n"
+         "      uint32_t last_float_constant = (end_index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;\n",
+         "    uint32_t sr_first = start_index, sr_last = end_index;  // [perf] the span that changed\n"
+         f"    {P}CountOnGpuThread({P}kConstWrite);\n"
+         "    if (SrSkipOn()) {\n"
+         "      uint32_t lo, hi;\n"
+         "      if (!SrCopyChanged(register_file_->values + start_index, base, num_registers, lo, hi)) {\n"
+         f"        {P}CountOnGpuThread({P}kConstSkip);\n"
+         "        return;\n"
+         "      }\n"
+         "      sr_first = start_index + lo, sr_last = start_index + hi;\n"
+         "    } else {\n"
+         "      memory::copy_and_swap(register_file_->values + start_index, base, num_registers);\n"
+         "    }\n"
+         "    if (frame_open_) {\n"
+         "      uint32_t first_float_constant = (sr_first - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;\n"
+         "      uint32_t last_float_constant = (sr_last - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;\n")
+    edit(vcp,
+         "      end_index <= XE_GPU_REG_SHADER_CONSTANT_LOOP_31) {\n"
+         "    memory::copy_and_swap(register_file_->values + start_index, base, num_registers);\n"
+         "    current_constant_buffers_up_to_date_ &=\n",
+         "      end_index <= XE_GPU_REG_SHADER_CONSTANT_LOOP_31) {\n"
+         f"    {P}CountOnGpuThread({P}kConstWrite);  // [perf]\n"
+         "    if (SrSkipOn()) {\n"
+         "      uint32_t lo, hi;\n"
+         "      if (!SrCopyChanged(register_file_->values + start_index, base, num_registers, lo, hi)) {\n"
+         f"        {P}CountOnGpuThread({P}kConstSkip);\n"
+         "        return;\n"
+         "      }\n"
+         "    } else {\n"
+         "      memory::copy_and_swap(register_file_->values + start_index, base, num_registers);\n"
+         "    }\n"
+         "    current_constant_buffers_up_to_date_ &=\n")
+    # fetch constants: the texture bindings and vertex buffers of the changed span only
+    edit(vcp,
+         "      end_index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {\n"
+         "    memory::copy_and_swap(register_file_->values + start_index, base, num_registers);\n"
+         "    current_constant_buffers_up_to_date_ &=\n"
+         "        ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFetch);\n"
+         "    uint32_t first_fetch_dword = start_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;\n"
+         "    uint32_t last_fetch_dword = end_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;\n",
+         "      end_index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {\n"
+         "    uint32_t sr_first = start_index, sr_last = end_index;  // [perf] the span that changed\n"
+         f"    {P}CountOnGpuThread({P}kConstWrite);\n"
+         "    if (SrSkipOn()) {\n"
+         "      uint32_t lo, hi;\n"
+         "      if (!SrCopyChanged(register_file_->values + start_index, base, num_registers, lo, hi)) {\n"
+         f"        {P}CountOnGpuThread({P}kConstSkip);\n"
+         "        return;\n"
+         "      }\n"
+         "      sr_first = start_index + lo, sr_last = start_index + hi;\n"
+         "    } else {\n"
+         "      memory::copy_and_swap(register_file_->values + start_index, base, num_registers);\n"
+         "    }\n"
+         "    current_constant_buffers_up_to_date_ &=\n"
+         "        ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFetch);\n"
+         "    uint32_t first_fetch_dword = sr_first - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;\n"
+         "    uint32_t last_fetch_dword = sr_last - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;\n")
+    # the report: how many constant writes changed nothing, and (mode 2) the next window's state
+    edit(vcp,
+         "      if (REXCVAR_GET(gpu_draw_profile)) {\n"
+         "        // [perf] the draw profile",
+         "      if (REXCVAR_GET(gpu_skip_unchanged_writes)) {\n"
+         "        // [perf] gpu_skip_unchanged_writes: this window's state, then (2) the next one's\n"
+         "        REXGPU_INFO(\"unchanged constant writes: {:.0f} of {:.0f} a frame ({:.0f}%), skipping {} in these 10 s\",\n"
+         "                    n[kConstSkip], n[kConstWrite], n[kConstWrite] > 0 ? 100.0 * n[kConstSkip] / n[kConstWrite] : 0.0,\n"
+         "                    REXCVAR_GET(gpu_skip_unchanged_writes) == 1 || g_skip_window_on ? \"ON\" : \"OFF\");\n"
+         "        if (REXCVAR_GET(gpu_skip_unchanged_writes) == 2) g_skip_window_on = !g_skip_window_on;\n"
+         "      }\n"
+         "      if (REXCVAR_GET(gpu_draw_profile)) {\n"
+         "        // [perf] the draw profile")
 
 
 if __name__ == "__main__":
