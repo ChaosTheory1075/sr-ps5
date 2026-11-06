@@ -1360,27 +1360,11 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "    {\n"
          "      std::lock_guard<std::mutex> lock(creation_request_lock_);\n"
          "      startup_loading_ = true;\n")
-    edit(vpc2,
-         "    if (found_pipeline == VK_NULL_HANDLE) {\n"
-         "      PipelineCreationArguments creation_arguments;\n",
-         "    if (found_pipeline == VK_NULL_HANDLE && use_async) {\n"
-         "      // [sr] a stored one's first use: the placeholder, the real one queued\n"
-         "      PipelineCreationArguments creation_arguments_placeholder, creation_arguments_real;\n"
-         "      if (TryGetPipelineCreationArgumentsForDescription(description, &*it, creation_arguments_real) &&\n"
-         "          TryGetPipelineCreationArgumentsForDescription(description, &*it,\n"
-         "                                                        creation_arguments_placeholder, true) &&\n"
-         "          EnsurePipelineCreated(creation_arguments_placeholder, placeholder_pixel_shader_)) {\n"
-         "        creation_arguments_real.priority = async_priority;\n"
-         "        {\n"
-         "          std::lock_guard<std::mutex> lock(creation_request_lock_);\n"
-         "          creation_queue_.push(creation_arguments_real);\n"
-         "        }\n"
-         "        creation_request_cond_.notify_one();\n"
-         "        found_pipeline = it->second.pipeline.load(std::memory_order_acquire);\n"
-         "      }\n"
-         "    }\n"
-         "    if (found_pipeline == VK_NULL_HANDLE) {\n"
-         "      PipelineCreationArguments creation_arguments;\n")
+    # (A stored pipeline's first use used to build a placeholder (its vertex shader, the
+    # placeholder pixel shader) here, on the GPU thread: 13-16 ms each, 15-25 at once on a new
+    # area's first frame = the 237-372 ms hitches of sr1_027 / sr2_009. Removed: MP3's edit
+    # below ("not built yet ... Nothing is compiled here, on the GPU thread") queues it and skips
+    # its draws until a creation thread has it, as MP3 RePrescribed does.)
 
     # Every submission's end built the whole creation queue on the GPU thread
     # (CreateQueuedPipelinesOnProcessorThread) and then waited for the
@@ -2993,6 +2977,343 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "                cp = static_cast<utfchar8_t>(*it);\n"
          "                ++it;\n"
          "                break;\n")
+
+
+    SR_SUBMIT_THREAD_CLASS = r"""void SrSavePipelineCache();  // [sr] pipeline_cache.cpp
+
+// [sr] The submit thread (see ci/patch_framework.py): a submission's recorded commands are
+// replayed into its Vulkan command buffer and submitted here, in order, while the GPU thread
+// records the next submission.
+class SrSubmitThread {
+ public:
+  struct Job {
+    std::vector<uintmax_t> stream;
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    std::vector<VkSemaphore> wait_semaphores;
+    std::vector<VkPipelineStageFlags> wait_stage_masks;
+    VkFence fence = VK_NULL_HANDLE;
+    uint64_t submission = 0;
+  };
+
+  static SrSubmitThread& Get() {
+    static SrSubmitThread thread;
+    return thread;
+  }
+
+  // (from the GPU thread: the thread starts at the first submission)
+  bool Active(VulkanCommandProcessor* command_processor) {
+    if (state_ == kUnknown) {
+      Start(command_processor);
+    }
+    return state_ == kRunning;
+  }
+  bool Running() const { return state_ == kRunning; }
+  uint64_t Submitted() const { return submitted_.load(std::memory_order_acquire); }
+
+  // An empty stream with room in it (one the thread is done with), or nothing.
+  void TakeSpare(std::vector<uintmax_t>& stream) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!spares_.empty()) {
+      stream = std::move(spares_.back());
+      spares_.pop_back();
+    }
+  }
+
+  void Push(Job&& job) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      jobs_.push_back(std::move(job));
+    }
+    work_cv_.notify_one();
+  }
+
+  // Until every submission up to `submission` is on the queue.
+  void WaitSubmitted(uint64_t submission) {
+    if (state_ != kRunning || Submitted() >= submission) {
+      return;
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    const uint64_t start = rex::sr_perf::NowUs();
+    done_cv_.wait(lock, [&] {
+      return submitted_.load(std::memory_order_acquire) >= submission || (jobs_.empty() && !busy_);
+    });
+    waited_us_ += rex::sr_perf::NowUs() - start;
+    ++waits_;
+  }
+
+  // Until the thread has submitted everything handed to it (not on the thread itself).
+  void Drain() {
+    if (state_ != kRunning || on_thread_) {
+      return;
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (jobs_.empty() && !busy_) {
+      return;
+    }
+    const uint64_t start = rex::sr_perf::NowUs();
+    done_cv_.wait(lock, [&] { return jobs_.empty() && !busy_; });
+    waited_us_ += rex::sr_perf::NowUs() - start;
+    ++waits_;
+  }
+
+ private:
+  enum State { kUnknown, kOff, kRunning };
+
+  void Start(VulkanCommandProcessor* command_processor) {
+    command_processor_ = command_processor;
+    state_ = REXCVAR_GET(sr_submit_thread) ? kRunning : kOff;
+    REXGPU_INFO("sr submit thread: {}", state_ == kRunning ? "on (CPU 5)" : "off");
+    if (state_ == kRunning) {
+      ui::vulkan::g_before_queue_acquire = [] { SrSubmitThread::Get().Drain(); };
+      std::thread([this] { Main(); }).detach();
+    }
+  }
+
+  void Main() {
+    on_thread_ = true;
+#if defined(__PROSPERO__)
+    // CPU 5: the lane's twin, which nothing else uses
+    rex::frame_stats::scePthreadSetaffinity(pthread_self(), uint64_t(1) << 5);
+#endif
+    rex::ps5diag::RegisterThread("gpu submit");
+    for (;;) {
+      Job job;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        work_cv_.wait(lock, [&] { return !jobs_.empty(); });
+        job = std::move(jobs_.front());
+        jobs_.pop_front();
+        busy_ = true;
+      }
+      const uint64_t start = rex::sr_perf::NowUs();
+      Run(job);
+      const uint64_t end = rex::sr_perf::NowUs();
+      job.stream.clear();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        busy_ = false;
+        submitted_.store(job.submission, std::memory_order_release);
+        busy_us_ += end - start;
+        ++done_;
+        if (spares_.size() < 8) {
+          spares_.push_back(std::move(job.stream));
+        }
+      }
+      done_cv_.notify_all();
+      if (!report_us_) {
+        report_us_ = end;
+      } else if (end - report_us_ >= 10000000) {
+        uint64_t busy_us, waited_us, waits, done;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          busy_us = busy_us_;
+          waited_us = waited_us_;
+          waits = waits_;
+          done = done_;
+          busy_us_ = waited_us_ = waits_ = done_ = 0;
+        }
+        const double seconds = double(end - report_us_) / 1000000.0;
+        report_us_ = end;
+        REXGPU_INFO(
+            "sr submit thread: {} submissions in {:.1f} s, {:.1f} ms a second replaying and "
+            "submitting; waited for {} times, {:.1f} ms a second",
+            done, seconds, double(busy_us) / 1000.0 / seconds, waits,
+            double(waited_us) / 1000.0 / seconds);
+      }
+    }
+  }
+
+  void Run(Job& job) {
+    const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_->GetVulkanDevice();
+    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+    const VkDevice device = vulkan_device->device();
+    bool recorded = dfn.vkResetCommandPool(device, job.pool, 0) == VK_SUCCESS;
+    if (recorded) {
+      VkCommandBufferBeginInfo begin_info = {};
+      begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+      begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+      recorded = dfn.vkBeginCommandBuffer(job.command_buffer, &begin_info) == VK_SUCCESS;
+    }
+    if (recorded) {
+      command_processor_->deferred_command_buffer().ExecuteStream(job.command_buffer, job.stream);
+      recorded = dfn.vkEndCommandBuffer(job.command_buffer) == VK_SUCCESS;
+    }
+    if (!recorded) {
+      REXGPU_ERROR("sr submit thread: failed to record a Vulkan command buffer");
+    }
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    if (!job.wait_semaphores.empty()) {
+      submit_info.waitSemaphoreCount = uint32_t(job.wait_semaphores.size());
+      submit_info.pWaitSemaphores = job.wait_semaphores.data();
+      submit_info.pWaitDstStageMask = job.wait_stage_masks.data();
+    }
+    submit_info.commandBufferCount = recorded ? 1 : 0;
+    submit_info.pCommandBuffers = &job.command_buffer;
+    VkResult result;
+    {
+      ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
+          vulkan_device->AcquireQueue(vulkan_device->queue_family_graphics_compute(), 0);
+      result = dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, job.fence);
+      if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
+        // (the fence still signals: the GPU thread waits on it)
+        VkSubmitInfo empty_submit = {};
+        empty_submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &empty_submit, job.fence);
+      }
+    }
+    if (result != VK_SUCCESS) {
+      // (a lost device shows up at the GPU thread's next fence wait)
+      REXGPU_ERROR("sr submit thread: failed to submit a Vulkan command buffer ({})", int(result));
+    }
+  }
+
+  static inline thread_local bool on_thread_ = false;
+  State state_ = kUnknown;
+  VulkanCommandProcessor* command_processor_ = nullptr;
+  std::mutex mutex_;
+  std::condition_variable work_cv_, done_cv_;
+  std::deque<Job> jobs_;
+  std::vector<std::vector<uintmax_t>> spares_;
+  bool busy_ = false;
+  std::atomic<uint64_t> submitted_{0};
+  uint64_t busy_us_ = 0, waited_us_ = 0, waits_ = 0, done_ = 0, report_us_ = 0;
+};
+"""
+
+    # [sr] The submit thread, from Driver SF RePlayed (dsf-ps5 815c67e, 2026-11-05): the GPU thread spent 3-5.5 ms of each
+    # 17-22 ms frame in EndSubmission replaying its recorded commands into the Vulkan command
+    # buffer (radv) and submitting them. That replay now runs on a thread of its own (CPU 5, the
+    # lane's twin, empty until now) while the GPU thread goes on with the next submission's draws.
+    # The queue sees the same order as before: anyone else acquiring it (the presenter, sparse
+    # binds) first waits for the thread to be empty, and the GPU thread never waits on or polls
+    # a fence the thread hasn't submitted yet. Nothing drawn changes. sr_submit_thread = false
+    # turns it off.
+    vk = sdk / "include" / "rex" / "ui" / "vulkan" / "device.h"
+    edit(vk, "class VulkanDevice {\n",
+         "// [sr] (set by the submit thread, command_processor.cpp: called before a queue is acquired\n"
+         "// by a thread that doesn't hold one already)\n"
+         "inline void (*g_before_queue_acquire)() = nullptr;\n"
+         "inline thread_local int g_queue_acquisitions = 0;\n\n"
+         "class VulkanDevice {\n")
+    edit(vk, "      explicit Acquisition(Queue& queue) : lock_(queue.mutex), queue_(queue.queue) {}\n",
+         "      explicit Acquisition(Queue& queue) : lock_(queue.mutex), queue_(queue.queue) {\n"
+         "        ++g_queue_acquisitions;  // [sr]\n"
+         "      }\n"
+         "      Acquisition(Acquisition&& other) = default;\n"
+         "      ~Acquisition() {\n"
+         "        if (lock_.owns_lock()) {\n"
+         "          --g_queue_acquisitions;\n"
+         "        }\n"
+         "      }\n")
+    edit(vk, "                                  const uint32_t queue_index) const {\n"
+             "    return queue_families()[queue_family_index].queues[queue_index]->Acquire();\n",
+         "                                  const uint32_t queue_index) const {\n"
+         "    if (g_before_queue_acquire && !g_queue_acquisitions) {\n"
+         "      g_before_queue_acquire();  // [sr] the submit thread's submissions go first\n"
+         "    }\n"
+         "    return queue_families()[queue_family_index].queues[queue_index]->Acquire();\n")
+
+    dcb_h = sdk / "include" / "rex" / "graphics" / "vulkan" / "deferred_command_buffer.h"
+    edit(dcb_h, "  void Execute(VkCommandBuffer command_buffer);\n",
+         "  void Execute(VkCommandBuffer command_buffer);\n"
+         "  // [sr] (the submit thread's: the recorded commands handed over, an empty stream in their\n"
+         "  // place; and replayed from there)\n"
+         "  void TakeStream(std::vector<uintmax_t>& stream) {\n"
+         "    stream.swap(command_stream_);\n"
+         "    command_stream_.clear();\n"
+         "  }\n"
+         "  void ExecuteStream(VkCommandBuffer command_buffer, const std::vector<uintmax_t>& commands);\n")
+    dcb = sdk / "src" / "graphics" / "vulkan" / "deferred_command_buffer.cpp"
+    edit(dcb, "void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {\n",
+         "void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {\n"
+         "  ExecuteStream(command_buffer, command_stream_);\n"
+         "}\n\n"
+         "void DeferredCommandBuffer::ExecuteStream(VkCommandBuffer command_buffer,\n"
+         "                                          const std::vector<uintmax_t>& commands) {\n")
+    edit(dcb, "  const uintmax_t* stream = command_stream_.data();\n"
+              "  size_t stream_remaining = command_stream_.size();\n",
+         "  const uintmax_t* stream = commands.data();  // [sr]\n"
+         "  size_t stream_remaining = commands.size();\n")
+
+    edit(sdk / "src" / "core" / "ps5_diag.cpp",
+         '!std::strcmp(e.what, "gpu lane"))\n',
+         '!std::strcmp(e.what, "gpu lane") ||\n'
+         '        !std::strcmp(e.what, "gpu submit"))  // [sr] (the submit thread: CPU 5)\n')
+
+    cp = sdk / "src" / "graphics" / "vulkan" / "command_processor.cpp"
+    edit(cp, "#include <mutex>\n#include <string>\n",
+         "#include <mutex>\n#include <condition_variable>  // [sr] (the submit thread)\n#include <deque>\n"
+         "#include <thread>\n#include <string>\n")
+    edit(cp, 'REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",\n',
+         'REXCVAR_DEFINE_BOOL(sr_submit_thread, true, "GPU/Vulkan",\n'
+         '                    "[sr] Replay and submit each submission\'s Vulkan commands on a thread of "\n'
+         '                    "its own (CPU 5) while the GPU thread goes on with the next draws");\n\n'
+         'REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",\n')
+    edit(cp, "void SrSavePipelineCache();  // [sr] pipeline_cache.cpp\n",
+         SR_SUBMIT_THREAD_CLASS)
+    edit(cp, "  GpuLane::Get().Drain();  // [crackdown]\n  AwaitAllQueueOperationsCompletion();\n",
+         "  GpuLane::Get().Drain();  // [crackdown]\n"
+         "  SrSubmitThread::Get().Drain();  // [sr]\n"
+         "  AwaitAllQueueOperationsCompletion();\n")
+    edit(cp, "  size_t fences_total = submissions_in_flight_fences_.size();\n"
+             "  size_t fences_awaited = 0;\n",
+         "  size_t fences_total = submissions_in_flight_fences_.size();\n"
+         "  if (SrSubmitThread::Get().Running()) {\n"
+         "    // [sr] only fences the submit thread has submitted are awaited or polled\n"
+         "    if (await_submission > submission_completed_) {\n"
+         "      rex::sr_perf::Scope sr_perf_submit_wait(rex::sr_perf::kSubmit);\n"
+         "      SrSubmitThread::Get().WaitSubmitted(await_submission);\n"
+         "    }\n"
+         "    const uint64_t submitted = SrSubmitThread::Get().Submitted();\n"
+         "    fences_total = std::min(fences_total, submitted > submission_completed_\n"
+         "                                              ? size_t(submitted - submission_completed_)\n"
+         "                                              : size_t(0));\n"
+         "  }\n"
+         "  size_t fences_awaited = 0;\n")
+    edit(cp, "    SubmitBarriers(true);\n\n"
+             "    assert_false(command_buffers_writable_.empty());\n"
+             "    CommandBuffer command_buffer = command_buffers_writable_.back();\n"
+             "    if (dfn.vkResetCommandPool(device, command_buffer.pool, 0) != VK_SUCCESS) {\n",
+         "    SubmitBarriers(true);\n\n"
+         "    if (SrSubmitThread::Get().Active(this)) {\n"
+         "      // [sr] replayed and submitted on the submit thread; the bookkeeping as below\n"
+         "      assert_false(command_buffers_writable_.empty());\n"
+         "      CommandBuffer command_buffer = command_buffers_writable_.back();\n"
+         "      assert_false(fences_free_.empty());\n"
+         "      VkFence fence = fences_free_.back();\n"
+         "      if (dfn.vkResetFences(device, 1, &fence) != VK_SUCCESS) {\n"
+         "        REXGPU_ERROR(\"Failed to reset a Vulkan submission fence\");\n"
+         "        return false;\n"
+         "      }\n"
+         "      uint64_t submission_current = GetCurrentSubmission();\n"
+         "      SrSubmitThread::Job job;\n"
+         "      SrSubmitThread::Get().TakeSpare(job.stream);\n"
+         "      deferred_command_buffer_.TakeStream(job.stream);\n"
+         "      job.command_buffer = command_buffer.buffer;\n"
+         "      job.pool = command_buffer.pool;\n"
+         "      job.wait_semaphores = current_submission_wait_semaphores_;\n"
+         "      job.wait_stage_masks = current_submission_wait_stage_masks_;\n"
+         "      job.fence = fence;\n"
+         "      job.submission = submission_current;\n"
+         "      SrSubmitThread::Get().Push(std::move(job));\n"
+         "      current_submission_wait_stage_masks_.clear();\n"
+         "      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {\n"
+         "        submissions_in_flight_semaphores_.emplace_back(submission_current, semaphore);\n"
+         "      }\n"
+         "      current_submission_wait_semaphores_.clear();\n"
+         "      command_buffers_submitted_.emplace_back(submission_current, command_buffer);\n"
+         "      command_buffers_writable_.pop_back();\n"
+         "      submissions_in_flight_fences_.push_back(fence);\n"
+         "      fences_free_.pop_back();\n"
+         "      submission_open_ = false;\n"
+         "    } else {\n"
+         "    assert_false(command_buffers_writable_.empty());\n"
+         "    CommandBuffer command_buffer = command_buffers_writable_.back();\n"
+         "    if (dfn.vkResetCommandPool(device, command_buffer.pool, 0) != VK_SUCCESS) {\n")
+    edit(cp, "    submission_open_ = false;\n  }\n\n  if (is_closing_frame) {\n",
+         "    submission_open_ = false;\n    }  // [sr] (the submit thread's else)\n  }\n\n  if (is_closing_frame) {\n")
 
 
 if __name__ == "__main__":
