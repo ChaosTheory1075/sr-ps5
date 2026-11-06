@@ -2359,13 +2359,6 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     # cache (a new install) every new area's burst of pipelines froze the picture. Found in
     # PROTOTYPE: ReEvolution (100-650 ms, all in "submit"). With async compilation the queue
     # is left to the creation threads.
-    edit(vpc2,
-         "    if (startup_loading) {\n"
-         "      creation_request_cond_.notify_one();\n"
-         "    } else {\n",
-         "    if (startup_loading || REXCVAR_GET(async_shader_compilation)) {  // [sr]\n"
-         "      creation_request_cond_.notify_one();\n"
-         "    } else {\n")
     # [sr] A shader met for the first time was translated (Xenos microcode to SPIR-V) on the
     # GPU thread in the middle of its draw: about 25 ms each with the EDRAM emulated (612 in
     # 1924 ms on 8 threads at startup), so a new area's ten or so new shaders held one frame
@@ -2595,139 +2588,13 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     # gameplay were those compiles (sr_008.log: each drop a burst of
     # "Creating graphics pipeline state"). Saved from the GPU thread's 10 s
     # report when new pipelines were made, written on a thread of its own.
-    edit(vpc2,
-         "namespace rex::graphics::vulkan {\n",
-         "namespace rex::graphics::vulkan {\n\n"
-         "// [sr] the driver's pipeline cache, kept across sessions (ci/patch_framework.py)\n"
-         "namespace {\n"
-         "VkPipelineCache sr_vk_cache = VK_NULL_HANDLE;\n"
-         "const ui::vulkan::VulkanDevice* sr_vk_cache_device = nullptr;\n"
-         "std::string sr_vk_cache_path;\n"
-         "std::atomic<uint32_t> sr_vk_cache_new{0};\n"
-         "std::atomic<bool> sr_vk_cache_saving{false};\n"
-         "void SrOpenPipelineCache(const ui::vulkan::VulkanDevice* device, const std::filesystem::path& path) {\n"
-         "  if (sr_vk_cache != VK_NULL_HANDLE || !device) return;\n"
-         "  std::vector<uint8_t> data;\n"
-         "  if (std::FILE* f = std::fopen(path.string().c_str(), \"rb\")) {\n"
-         "    std::fseek(f, 0, SEEK_END);\n"
-         "    const long size = std::ftell(f);\n"
-         "    std::fseek(f, 0, SEEK_SET);\n"
-         "    if (size > 0 && size < (256l << 20)) {\n"
-         "      data.resize(size_t(size));\n"
-         "      if (std::fread(data.data(), 1, data.size(), f) != data.size()) data.clear();\n"
-         "    }\n"
-         "    std::fclose(f);\n"
-         "  }\n"
-         "  VkPipelineCacheCreateInfo info = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};\n"
-         "  info.initialDataSize = data.size();\n"
-         "  info.pInitialData = data.empty() ? nullptr : data.data();\n"
-         "  const auto& dfn = device->functions();\n"
-         "  if (dfn.vkCreatePipelineCache(device->device(), &info, nullptr, &sr_vk_cache) != VK_SUCCESS) {\n"
-         "    info.initialDataSize = 0;\n"
-         "    info.pInitialData = nullptr;\n"
-         "    if (dfn.vkCreatePipelineCache(device->device(), &info, nullptr, &sr_vk_cache) != VK_SUCCESS)\n"
-         "      sr_vk_cache = VK_NULL_HANDLE;\n"
-         "  }\n"
-         "  sr_vk_cache_device = device;\n"
-         "  sr_vk_cache_path = path.string();\n"
-         "  REXGPU_INFO(\"sr: Vulkan pipeline cache {} ({} KB) at {}\", sr_vk_cache ? \"open\" : \"unavailable\",\n"
-         "              data.size() >> 10, sr_vk_cache_path);\n"
-         "}\n"
-         "}  // namespace\n\n"
-         "// From the GPU thread's 10 s report: saved when pipelines were made since.\n"
-         "void SrSavePipelineCache() {\n"
-         "  // (at most once a minute, and all of it on a thread of its own: reading the\n"
-         "  // 13-18 MB cache on the GPU thread every 10 s was a hitch in itself)\n"
-         "  static uint32_t reports = 0;\n"
-         "  if (sr_vk_cache == VK_NULL_HANDLE || !sr_vk_cache_new.load() || ++reports < 6) return;\n"
-         "  if (sr_vk_cache_saving.exchange(true)) return;\n"
-         "  reports = 0;\n"
-         "  const uint32_t made = sr_vk_cache_new.exchange(0);\n"
-         "  std::thread([made]() {\n"
-         "    const auto& dfn = sr_vk_cache_device->functions();\n"
-         "    size_t size = 0;\n"
-         "    std::vector<uint8_t> data;\n"
-         "    if (dfn.vkGetPipelineCacheData(sr_vk_cache_device->device(), sr_vk_cache, &size, nullptr) == VK_SUCCESS &&\n"
-         "        size) {\n"
-         "      data.resize(size);\n"
-         "      if (dfn.vkGetPipelineCacheData(sr_vk_cache_device->device(), sr_vk_cache, &size, data.data()) !=\n"
-         "          VK_SUCCESS)\n"
-         "        data.clear();\n"
-         "      data.resize(std::min(size, data.size()));\n"
-         "    }\n"
-         "    bool ok = false;\n"
-         "    if (!data.empty()) {\n"
-         "      const std::string tmp = sr_vk_cache_path + \".tmp\";\n"
-         "      if (std::FILE* f = std::fopen(tmp.c_str(), \"wb\")) {\n"
-         "        ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();\n"
-         "        ok = std::fclose(f) == 0 && ok;\n"
-         "      }\n"
-         "      if (ok) ok = std::rename(tmp.c_str(), sr_vk_cache_path.c_str()) == 0;\n"
-         "    }\n"
-         "    REXGPU_INFO(\"sr: Vulkan pipeline cache saved ({} KB, {} new pipelines){}\", data.size() >> 10, made,\n"
-         "                ok ? \"\" : \" - FAILED\");\n"
-         "    sr_vk_cache_saving.store(false);\n"
-         "  }).detach();\n"
-         "}\n")
     edit(vpc2, "#include <algorithm>\n", "#include <algorithm>\n#include <cstdio>\n#include <filesystem>\n#include <thread>\n")
-    edit(vpc2,
-         "  auto shader_storage_root = cache_root / \"shaders\";\n"
-         "  auto shader_storage_shareable_root = shader_storage_root / \"shareable\";\n",
-         "  auto shader_storage_root = cache_root / \"shaders\";\n"
-         "  auto shader_storage_shareable_root = shader_storage_root / \"shareable\";\n"
-         "  {\n"
-         "    std::error_code sr_ec;\n"
-         "    std::filesystem::create_directories(shader_storage_root, sr_ec);\n"
-         "    SrOpenPipelineCache(command_processor_.GetVulkanDevice(),\n"
-         "                         shader_storage_root / fmt::format(\"{:08X}.vk-pipelines.bin\", title_id));\n"
-         "  }\n")
-    edit(vpc2,
-         "  VkResult create_result = dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,\n"
-         "                                                         &pipeline_create_info, nullptr, &pipeline);\n",
-         "  VkResult create_result = dfn.vkCreateGraphicsPipelines(device, sr_vk_cache, 1,\n"
-         "                                                         &pipeline_create_info, nullptr, &pipeline);\n"
-         "  if (create_result == VK_SUCCESS && sr_vk_cache != VK_NULL_HANDLE) sr_vk_cache_new.fetch_add(1);\n")
-    edit(vcp,
-         "      last_us = now;\n      frames = 0;\n    }\n  }\n",
-         "      last_us = now;\n      frames = 0;\n      SrSavePipelineCache();  // (pipeline_cache.cpp)\n    }\n  }\n")
-    edit(vcp,
-         "namespace rex::graphics::vulkan {\n\nnamespace {\n",
-         "namespace rex::graphics::vulkan {\n\nvoid SrSavePipelineCache();  // [sr] pipeline_cache.cpp\n\nnamespace {\n")
 
     # The pipeline description storage (<title>.fsi.vk.xpso) held 229 pipelines
     # in every session since the first ones, though each session made new ones
     # (sr_001.log, 20:22): so every session translated and built those again
     # mid-game. How many were read, kept and written, for the log; and the
     # files seeked to their end before the writer appends.
-    edit(vpc2,
-         "      pipeline_stored_descriptions.resize(pipeline_storage_kept_count);\n",
-         "      pipeline_stored_descriptions.resize(pipeline_storage_kept_count);\n"
-         "      REXGPU_INFO(\"sr: pipeline storage: {} read, {} kept, {} unsupported, {} corrupted\",\n"
-         "                  pipeline_storage_read_count, pipeline_storage_kept_count,\n"
-         "                  pipeline_storage_skipped_unsupported_count, pipeline_storage_skipped_corrupted_count);\n")
-    edit(vpc2,
-         "    rex::filesystem::TruncateStdioFile(shader_storage_file_, shader_storage_valid_bytes);\n",
-         "    rex::filesystem::TruncateStdioFile(shader_storage_file_, shader_storage_valid_bytes);\n"
-         "    rex::filesystem::Seek(shader_storage_file_, 0, SEEK_END);  // [sr] (for the writer)\n"
-         "    REXGPU_INFO(\"sr: shader storage: {} KB of shaders\", shader_storage_valid_bytes >> 10);\n")
-    edit(vpc2,
-         "  shader_storage_cache_root_ = cache_root;\n  shader_storage_title_id_ = title_id;\n",
-         "  rex::filesystem::Seek(pipeline_storage_file_, 0, SEEK_END);  // [sr] (for the writer)\n"
-         "  shader_storage_cache_root_ = cache_root;\n  shader_storage_title_id_ = title_id;\n")
-    edit(vpc2,
-         "    if (write_pipeline) {\n"
-         "      assert_not_null(pipeline_storage_file_);\n"
-         "      fwrite(&pipeline_description, sizeof(pipeline_description), 1, pipeline_storage_file_);\n"
-         "    }\n",
-         "    if (write_pipeline) {\n"
-         "      assert_not_null(pipeline_storage_file_);\n"
-         "      const size_t sr_written =\n"
-         "          fwrite(&pipeline_description, sizeof(pipeline_description), 1, pipeline_storage_file_);\n"
-         "      static uint32_t sr_writes = 0, sr_failed = 0;\n"
-         "      sr_failed += sr_written != 1;\n"
-         "      if ((++sr_writes % 50) == 1 || sr_written != 1)\n"
-         "        REXGPU_INFO(\"sr: pipeline storage: {} written this session ({} failed)\", sr_writes, sr_failed);\n"
-         "    }\n")
 
     # The stored shaders were translated one at a time on the GPU thread, before
     # the game's main thread is even resumed (rex_app.cpp: blocking): the wait
@@ -2847,12 +2714,6 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     # every session since the first). Each flush now goes to the drive.
     edit(vpc2, "#include <algorithm>\n#include <cstdio>\n",
          "#include <algorithm>\n#include <cstdio>\n#include <unistd.h>\n")
-    edit(vpc2,
-         "      fflush(shader_storage_file_);\n",
-         "      fflush(shader_storage_file_);\n      fsync(fileno(shader_storage_file_));  // [sr]\n")
-    edit(vpc2,
-         "      fflush(pipeline_storage_file_);\n",
-         "      fflush(pipeline_storage_file_);\n      fsync(fileno(pipeline_storage_file_));  // [sr]\n")
 
     # The PlayStation button prompts (ps5/sr_prompts.cpp): a texture about to be loaded is shown
     # to the app first (its guest data, physical address and size), which may write the
