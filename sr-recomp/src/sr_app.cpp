@@ -343,6 +343,8 @@ void SrApp::OnPreSetup(rex::RuntimeConfig& config) {
   // No stall reports: with the FPS counter's NotePresent wired up, their SIGPROF sampling of every
   // thread fires on every load, and in Crackdown PS5 loads froze right after one (its 58a24b5).
   if (!rex::cvar::HasNonDefaultValue("ps5_hang_reports")) rex::cvar::SetLaunchFlag("ps5_hang_reports", "false");
+  // (the draw profile, as MGR: each step of a draw timed, the "draw cost" line every 10 s)
+  if (!rex::cvar::HasNonDefaultValue("gpu_draw_profile")) rex::cvar::SetLaunchFlag("gpu_draw_profile", "true");
 #if SR_GAME == 2
   // Saints Row 2's Bink cutscenes are frames the GPU resolves into textures: read back into guest
   // memory ("fast": a frame late) so a reload of those pages from guest memory brings back the
