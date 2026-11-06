@@ -87,7 +87,7 @@ for g in 1 2; do
   if [ ! -d "$W/gen/$gen_key/generated" ]; then
     if [ -z "$REXGLUE" ]; then
       step "rexglue CLI (host)"
-      rsync -a --checksum --delete "$W/fw-new/" "$W/fw-host/"
+      rsync -rlpgoD --checksum --delete "$W/fw-new/" "$W/fw-host/"
       cmake -S "$W/fw-host/glue/rexglue-sdk-main" -B "$W/build-rexglue" -G Ninja         -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache         -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3         -DCMAKE_CXX_STANDARD=23 -DSR_NO_GTA4_NATIVE=ON         -DREXGLUE_ENABLE_TRACY=OFF -DREXGLUE_BUILD_GTA4_RECOMP=OFF         -DREXGLUE_BUILD_TESTS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 > "$W/rexglue-configure.txt"
       ninja -C "$W/build-rexglue" rexglue > "$W/rexglue-build.txt"
       REXGLUE=$(find "$W/build-rexglue" "$W/fw-host/glue/rexglue-sdk-main/out" -name rexglue -type f -perm -u+x 2>/dev/null | head -1)
@@ -120,7 +120,7 @@ done
 
 # ---- the PS5 program ----
 step "sync framework (by content)"
-rsync -a --checksum --delete "$W/fw-new/" "$W/ws/fw/"
+rsync -rlpgoD --checksum --delete "$W/fw-new/" "$W/ws/fw/"
 rm -rf "$W/fw-new"
 SDK=$W/tri/.deps/native/ps5-payload-sdk
 if [ ! -f out/ps5/build.ninja ]; then
