@@ -38,6 +38,9 @@ enum Counter : uint32_t {
   kRecord,        // in draws: index buffer bind and the draw recorded
   kConstWrite,    // (count only) shader / fetch / bool / loop constant register writes
   kConstSkip,     // (count only) ... of them, every value already there: nothing invalidated
+  kTexSlots,      // (count only) texture slots the draws' shaders use
+  kTexRecheck,    // (count only) ... of them not in sync: fetch constant re-read, key re-derived
+  kTexReset,      // (count only) every binding reset: a texture outdated by a CPU write
   kCount
 };
 
@@ -45,8 +48,8 @@ inline std::atomic<uint64_t> g_ns[kCount];
 inline std::atomic<uint64_t> g_n[kCount];
 
 // (a count from the GPU thread only: no locked instruction)
-inline void CountOnGpuThread(Counter c) {
-  g_n[c].store(g_n[c].load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+inline void CountOnGpuThread(Counter c, uint64_t k = 1) {
+  g_n[c].store(g_n[c].load(std::memory_order_relaxed) + k, std::memory_order_relaxed);
 }
 
 // The draw profile (gpu_draw_profile): IssueDraw's time by step, in CPU ticks (rdtsc: a few ns

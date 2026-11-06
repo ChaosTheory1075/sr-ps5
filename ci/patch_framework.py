@@ -3255,6 +3255,7 @@ class SrSubmitThread {
     draw_profile(sdk)
     # Constant writes that change no value invalidate nothing (gpu_skip_unchanged_writes, from MGR).
     skip_unchanged_writes(sdk)
+    texture_request_counts(sdk)
 
 def draw_profile(sdk):
     """(From Metal Gear Rising: Revengeance mgr-ps5 6b7d5c1.) What one draw costs on the GPU command thread (cvar gpu_draw_profile, rex/<port>_perf.h).
@@ -3478,6 +3479,47 @@ def skip_unchanged_writes(sdk):
          "      }\n"
          "      if (REXCVAR_GET(gpu_draw_profile)) {\n"
          "        // [perf] the draw profile")
+
+
+def texture_request_counts(sdk):
+    """What the draw profile's "texture requests" step does a draw (count only; 2026-11-06).
+
+    The Darkness II's console profile (dark2_029) gives texture requests 1.1-1.3 us of 5.4 us a draw
+    with uploads at 0.1 ms a frame, while Canary's trace replays of the same frames re-check only 12-15
+    of 170-1,809 texture slots (the rest are in sync). The difference on the console can only come from
+    what a replay doesn't do: CPU writes to a watched texture's pages (texture_became_outdated_ ->
+    ResetTextureBindings, every slot re-checked in the next draws). Three counts on the GPU thread
+    (plain adds, as kConstWrite) say which: slots used and re-checked a draw, and binding resets a
+    frame. Nothing the GPU draws changes. Printed under gpu_draw_profile.
+    """
+    P = "rex::sr_perf::"
+    tc = sdk / "src" / "graphics" / "pipeline" / "texture" / "cache.cpp"
+    edit(tc, "#include <rex/math.h>\n", "#include <rex/math.h>\n#include <rex/sr_perf.h>\n")
+    edit(tc,
+         "  if (texture_became_outdated_.exchange(false, std::memory_order_acquire)) {\n",
+         "  if (texture_became_outdated_.exchange(false, std::memory_order_acquire)) {\n"
+         f"    {P}CountOnGpuThread({P}kTexReset);  // [perf] count only\n")
+    edit(tc,
+         "  uint32_t textures_remaining = used_texture_mask & ~texture_bindings_in_sync_;\n"
+         "  uint32_t index = 0;\n"
+         "  while (rex::bit_scan_forward(textures_remaining, &index)) {\n"
+         "    uint32_t index_bit = UINT32_C(1) << index;\n",
+         "  uint32_t textures_remaining = used_texture_mask & ~texture_bindings_in_sync_;\n"
+         "  uint32_t index = 0;\n"
+         f"  {P}CountOnGpuThread({P}kTexSlots, uint64_t(__builtin_popcount(used_texture_mask)));  // [perf] count only\n"
+         f"  {P}CountOnGpuThread({P}kTexRecheck, uint64_t(__builtin_popcount(textures_remaining)));\n"
+         "  while (rex::bit_scan_forward(textures_remaining, &index)) {\n"
+         "    uint32_t index_bit = UINT32_C(1) << index;\n")
+    vcp = sdk / "src" / "graphics" / "vulkan" / "command_processor.cpp"
+    edit(vcp,
+         "                      std::max(0.0, busy - sum), own_us);\n        }\n",
+         "                      std::max(0.0, busy - sum), own_us);\n"
+         "          // [perf] what texture requests did (count only)\n"
+         "          REXGPU_INFO(\"texture requests: {:.1f} slots a draw, {:.2f} of them re-checked; {:.1f} binding resets \"\n"
+         "                      \"a frame (a texture outdated by a CPU write)\",\n"
+         "                      n[kDraw] > 0 ? n[kTexSlots] / n[kDraw] : 0.0, n[kDraw] > 0 ? n[kTexRecheck] / n[kDraw] : 0.0,\n"
+         "                      n[kTexReset]);\n"
+         "        }\n")
 
 
 if __name__ == "__main__":
