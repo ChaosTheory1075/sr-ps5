@@ -1438,6 +1438,14 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "  reports = 0;\n"
          "  const uint32_t made = sr_vk_cache_new.exchange(0);\n"
          "  std::thread([made]() {\n"
+         "#if defined(__PROSPERO__)\n"
+         "    // (off CPU 0, as Stranglehold 8048d4d: a new thread keeps its creator's CPUs, and the GPU\n"
+         "    // thread that starts this one has CPU 0 to itself. Reading out the 8-18 MB cache there held\n"
+         "    // the GPU thread off its CPU: sr2_009.1 17:08:34.662, a 261 ms hitch with 13 ms of it\n"
+         "    // accounted for, 0.36 s before \"saved (8445 KB)\". Now on the other threads' CPUs, 2-3 and\n"
+         "    // 6-12, the mask KeepOtherThreadsOn gives them.)\n"
+         "    rex::frame_stats::scePthreadSetaffinity(pthread_self(), 0x1FCC);\n"
+         "#endif\n"
          "    const auto& dfn = sr_vk_cache_device->functions();\n"
          "    size_t size = 0;\n"
          "    std::vector<uint8_t> data;\n"
@@ -1463,7 +1471,9 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "    sr_vk_cache_saving.store(false);\n"
          "  }).detach();\n"
          "}\n")
-    edit(vpc2, "#include <algorithm>\n", "#include <algorithm>\n#include <cstdio>\n#include <filesystem>\n#include <thread>\n")
+    edit(vpc2, "#include <algorithm>\n",
+         "#include <algorithm>\n#include <cstdio>\n#include <filesystem>\n#include <thread>\n"
+         "#include <rex/frame_stats.h>  // [sr] (the cache saver's CPUs)\n")
     edit(vpc2,
          "  auto shader_storage_root = cache_root / \"shaders\";\n"
          "  auto shader_storage_shareable_root = shader_storage_root / \"shareable\";\n",
