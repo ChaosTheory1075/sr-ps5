@@ -41,10 +41,6 @@ enum Counter : uint32_t {
   kCount
 };
 
-// gpu_skip_unchanged_writes 2 (alternate): whether the skip is on in this 10 s window (the GPU
-// thread's report flips it).
-inline bool g_skip_window_on = true;
-
 inline std::atomic<uint64_t> g_ns[kCount];
 inline std::atomic<uint64_t> g_n[kCount];
 

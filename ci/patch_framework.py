@@ -3050,8 +3050,9 @@ class SrSubmitThread {
     # lane's twin, empty until now) while the GPU thread goes on with the next submission's draws.
     # The queue sees the same order as before: anyone else acquiring it (the presenter, sparse
     # binds) first waits for the thread to be empty, and the GPU thread never waits on or polls
-    # a fence the thread hasn't submitted yet. Nothing drawn changes. sr_submit_thread = false
-    # turns it off.
+    # a fence the thread hasn't submitted yet. OFF by default (supervisor order 2026-11-06: Driver SF's
+    # picture broke with it on, and its ordering against resolves / EDRAM copies isn't proven in code);
+    # sr_submit_thread = true turns it on in a test build.
     vk = sdk / "include" / "rex" / "ui" / "vulkan" / "device.h"
     edit(vk, "class VulkanDevice {\n",
          "// [sr] (set by the submit thread, command_processor.cpp: called before a queue is acquired\n"
@@ -3109,7 +3110,7 @@ class SrSubmitThread {
          "#include <mutex>\n#include <condition_variable>  // [sr] (the submit thread)\n#include <deque>\n"
          "#include <thread>\n#include <string>\n")
     edit(cp, 'REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",\n',
-         'REXCVAR_DEFINE_BOOL(sr_submit_thread, true, "GPU/Vulkan",\n'
+         'REXCVAR_DEFINE_BOOL(sr_submit_thread, false, "GPU/Vulkan",\n'
          '                    "[sr] Replay and submit each submission\'s Vulkan commands on a thread of "\n'
          '                    "its own (CPU 5) while the GPU thread goes on with the next draws");\n\n'
          'REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",\n')
@@ -3357,7 +3358,7 @@ def skip_unchanged_writes(sdk):
     is compared with the register file while it is copied in: when no value differs nothing is
     invalidated, and when some do only the changed span is. Every cache it skips would be rebuilt from
     the same register values, so what the GPU draws is identical to the pixel.
-    0: off, 1: on, 2: on and off in alternate 10 s windows (the same scene measured both ways).
+    0: off, 1: on. (No alternating mode: nothing in a player's build switches itself on and off.)
     Needs draw_profile()'s report and the kConstWrite / kConstSkip counters of <port>_perf.h.
     """
     vcp = sdk / "src" / "graphics" / "vulkan" / "command_processor.cpp"
@@ -3365,9 +3366,8 @@ def skip_unchanged_writes(sdk):
     edit(vcp,
          "REXCVAR_DEFINE_BOOL(gpu_draw_profile, false, \"GPU\",\n",
          "REXCVAR_DEFINE_INT32(gpu_skip_unchanged_writes, 0, \"GPU\",\n"
-         "                     \"Constant register writes that change no value invalidate nothing (0 off, 1 on, \"\n"
-         "                     \"2 on and off in alternate 10 s windows, to measure it)\")\n"
-         "    .range(0, 2);\n"
+         "                     \"Constant register writes that change no value invalidate nothing (0 off, 1 on)\")\n"
+         "    .range(0, 1);\n"
          "REXCVAR_DEFINE_BOOL(gpu_draw_profile, false, \"GPU\",\n")
     edit(vcp,
          "void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {\n"
@@ -3375,7 +3375,7 @@ def skip_unchanged_writes(sdk):
          "// [perf] gpu_skip_unchanged_writes: whether it is on now\n"
          "static bool SrSkipOn() {\n"
          "  const int32_t mode = REXCVAR_GET(gpu_skip_unchanged_writes);\n"
-         f"  return mode == 1 || (mode == 2 && {P}g_skip_window_on);\n"
+         "  return mode == 1;\n"
          "}\n"
          "// [perf] Copies the guest's (big-endian) values into the registers; the span of those that changed\n"
          "// in lo..hi, false when none did.\n"
@@ -3471,11 +3471,10 @@ def skip_unchanged_writes(sdk):
          "      if (REXCVAR_GET(gpu_draw_profile)) {\n"
          "        // [perf] the draw profile",
          "      if (REXCVAR_GET(gpu_skip_unchanged_writes)) {\n"
-         "        // [perf] gpu_skip_unchanged_writes: this window's state, then (2) the next one's\n"
+         "        // [perf] gpu_skip_unchanged_writes: how many writes it skipped\n"
          "        REXGPU_INFO(\"unchanged constant writes: {:.0f} of {:.0f} a frame ({:.0f}%), skipping {} in these 10 s\",\n"
          "                    n[kConstSkip], n[kConstWrite], n[kConstWrite] > 0 ? 100.0 * n[kConstSkip] / n[kConstWrite] : 0.0,\n"
-         "                    REXCVAR_GET(gpu_skip_unchanged_writes) == 1 || g_skip_window_on ? \"ON\" : \"OFF\");\n"
-         "        if (REXCVAR_GET(gpu_skip_unchanged_writes) == 2) g_skip_window_on = !g_skip_window_on;\n"
+         "                    REXCVAR_GET(gpu_skip_unchanged_writes) == 1 ? \"ON\" : \"OFF\");\n"
          "      }\n"
          "      if (REXCVAR_GET(gpu_draw_profile)) {\n"
          "        // [perf] the draw profile")

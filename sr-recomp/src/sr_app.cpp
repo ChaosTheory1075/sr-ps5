@@ -345,10 +345,11 @@ void SrApp::OnPreSetup(rex::RuntimeConfig& config) {
   if (!rex::cvar::HasNonDefaultValue("ps5_hang_reports")) rex::cvar::SetLaunchFlag("ps5_hang_reports", "false");
   // (the draw profile, as MGR: each step of a draw timed, the "draw cost" line every 10 s)
   if (!rex::cvar::HasNonDefaultValue("gpu_draw_profile")) rex::cvar::SetLaunchFlag("gpu_draw_profile", "true");
-  // (constant writes that change no value invalidate nothing, as MGR 45528e6: the same pixels, less
-  // per-draw work; 2 = on and off in alternate 10 s windows, so one run measures it. 1 once proven.)
+  // (constant writes that change no value invalidate nothing, as MGR 45528e6: OFF in the player's
+  // build. Driver SF's picture broke overnight with it switching on and off every 10 s (supervisor
+  // order 2026-11-06, Recomps\PERF-COLLECTIVE.md); it is measured only in a separate test build.)
   if (!rex::cvar::HasNonDefaultValue("gpu_skip_unchanged_writes"))
-    rex::cvar::SetLaunchFlag("gpu_skip_unchanged_writes", "2");
+    rex::cvar::SetLaunchFlag("gpu_skip_unchanged_writes", "0");
 #if SR_GAME == 2
   // Saints Row 2's Bink cutscenes are frames the GPU resolves into textures: read back into guest
   // memory ("fast": a frame late) so a reload of those pages from guest memory brings back the
