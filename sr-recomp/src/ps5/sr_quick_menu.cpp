@@ -411,6 +411,7 @@ void StartQuickMenu(rex::ui::ImGuiDrawer* drawer) {
   if (g_menu || !drawer) return;
   LoadCheats();
   g_menu = std::make_unique<QuickMenu>(drawer);
+  REXLOG_INFO("Quick menu: ready, CHEAT MENU {} (L3 + R3 in the game)", REXCVAR_GET(sr_quick_menu) ? "on" : "off");
   LuaSetTick(MakeTick, TickDone, 200);
   // (once, in the log: the player's health as the game's own functions give it)
   LuaRunOnce({OnPlayer("get_max_hit_points"), OnPlayer("get_current_hit_points")},
