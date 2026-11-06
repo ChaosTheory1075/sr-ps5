@@ -431,7 +431,7 @@ const char* PageName(int page) {
 // The settings page's rows, in its order (a new option: a row here, its line
 // in SettingsLines and its change in ChangeSetting).
 enum SettingsRow {
-  kFrameRate, kUpscaling, kSharpness, kAntiAliasing, kFiltering, kLane, kFps, kTrees, kPrompts, kDualSense, kLanguage, kSkipIntro, kCheatMenu, kDualSenseStrength, kRenderer, kMusic, kSettingsRows
+  kFrameRate, kUpscaling, kSharpness, kAntiAliasing, kFiltering, kLane, kFps, kTrees, kPrompts, kDualSense, kLanguage, kSkipIntro, kCheatMenu, kRenderer, kMusic, kSettingsRows
 };
 
 class MenuDialog final : public rex::ui::ImGuiDialog {
@@ -830,10 +830,11 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
                          T("In the game, press both sticks in (L3 + R3) for the quick menu: the cheats, the FPS "
                          "counter and the DualSense features. OFF: no quick menu, and no cheats.", "No jogo, aperte os dois analógicos (L3 + R3) para o menu rápido: as trapaças, o contador de FPS e "
                            "os recursos do DualSense. DESLIGADO: sem menu rápido e sem trapaças.")};
-    static constexpr const char* kStrengths[] = {"", "LOW", "MEDIUM", "HIGH"};
-    lines[kDualSenseStrength] = {T("CONTROLLER", "CONTROLE"), T("FEEDBACK STRENGTH", "FORÇA DO FEEDBACK"), TW(kStrengths[s.dualsense_strength]),
-                                 s.dualsense,
-                                 T("How strong the DualSense's added rumble and pulses are.", "A força da vibração e dos pulsos extras do DualSense.")};
+    // (FEEDBACK STRENGTH isn't a row: it scales only the added pulses - a hit, from the player's
+    // health - and the health is read only while a cheat runs (sr_quick_menu.cpp: polling the scripts
+    // blocked Saints Row's first mission), so in normal play it changed nothing. The game's own rumble
+    // is never scaled. It comes back with health read from the game's memory. dualsense_strength
+    // stays in menu.ini and Apply, at MEDIUM.)
     lines[kRenderer] = {"EXPERIMENTAL", T("RENDERER", "RENDERIZADOR"), s.host_rts ? T("FAST", "RÁPIDO") : T("ACCURATE", "PRECISO"), true,
                         T("ACCURATE copies the Xbox 360's video memory exactly, pixel by pixel. FAST draws with the PS5's "
                         "own graphics hardware: quicker, and the light glows hide behind walls and people as they "
@@ -895,11 +896,6 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
       case kCheatMenu:
         if (flip) s.cheat_menu = !s.cheat_menu;
         sets_[1].cheat_menu = sets_[2].cheat_menu = s.cheat_menu;  // (the same for both games)
-        break;
-      case kDualSenseStrength:
-        if (!s.dualsense) break;
-        if (cross) s.dualsense_strength = s.dualsense_strength % 3 + 1;
-        s.dualsense_strength = std::clamp(s.dualsense_strength + step, 1, 3);
         break;
       case kRenderer:
         if (flip) s.host_rts = !s.host_rts;
