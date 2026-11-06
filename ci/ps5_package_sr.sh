@@ -116,6 +116,8 @@ rm -rf "$payload_build" && mkdir -p "$payload_build" && cp -r "$payload_src/." "
 make -C "$payload_build" PS5_PAYLOAD_SDK="$sdk_root"
 mkdir -p "$app/payloads"
 cp "$payload_build/sr-ps5-installer.elf" "$app/payloads/sr-ps5-installer.elf"
+# (and SEND LOGS's: the same program with the logs' upload, libcurl, in it)
+cp "$payload_build/sr-ps5-logs.elf" "$app/payloads/sr-ps5-logs.elf"
 
 "$tool" self --inspect --file "$app/eboot.bin" | tail -3
 "$tool" self --inspect --file "$app/sr2.bin" | tail -3
