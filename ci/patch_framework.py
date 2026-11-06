@@ -3256,6 +3256,7 @@ class SrSubmitThread {
     # Constant writes that change no value invalidate nothing (gpu_skip_unchanged_writes, from MGR).
     skip_unchanged_writes(sdk)
     texture_request_counts(sdk)
+    texture_slot_reset(sdk)
 
 def draw_profile(sdk):
     """(From Metal Gear Rising: Revengeance mgr-ps5 6b7d5c1.) What one draw costs on the GPU command thread (cvar gpu_draw_profile, rex/<port>_perf.h).
@@ -3520,6 +3521,58 @@ def texture_request_counts(sdk):
          "                      n[kDraw] > 0 ? n[kTexSlots] / n[kDraw] : 0.0, n[kDraw] > 0 ? n[kTexRecheck] / n[kDraw] : 0.0,\n"
          "                      n[kTexReset]);\n"
          "        }\n")
+
+
+def texture_slot_reset(sdk):
+    """A texture outdated by a CPU write resets only the bindings holding an outdated texture (cvar
+    gpu_texture_slot_reset, default false: OFF until the console counts call for it; 2026-11-06).
+
+    Xenia's RequestTextures answers texture_became_outdated_ (set by a write watch on any texture's
+    pages) with ResetTextureBindings(): every valid binding's key cleared, so each slot of the next
+    draws re-reads its fetch constant, looks its texture up again (FindOrCreateTexture) and updates
+    its descriptors, though only the outdated texture needs reloading. Here only bindings whose
+    texture (or signed twin) has a nonzero outdated_mask() are reset. For every other binding the
+    full reset re-derives the same key, finds the same texture, sees it current and loads nothing:
+    the same state. A texture outdated after the flag is taken sets it again (watch callback: mask
+    first, flag after), so the next draw catches it, as before.
+    Proven on the PC (Extras/tmp/slotproof.sh): Canary's trace dump with the same change replayed the
+    three D2 console frames, with every other bound texture's pages invalidated every 5 / 25 texture
+    requests (6-82 resets a frame) to exercise the path. 0 uses of an outdated texture in either mode,
+    and every PNG byte-identical to the full reset's and to the unstressed replay's.
+    """
+    P = "rex::sr_perf::"
+    tc = sdk / "src" / "graphics" / "pipeline" / "texture" / "cache.cpp"
+    edit(tc, "void TextureCache::RequestTextures(uint32_t used_texture_mask) {\n",
+         "REXCVAR_DEFINE_BOOL(gpu_texture_slot_reset, false, \"GPU\",\n"
+         "                    \"A texture outdated by a CPU write resets only the texture bindings holding an \"\n"
+         "                    \"outdated texture, not all of them\");\n\n"
+         "void TextureCache::RequestTextures(uint32_t used_texture_mask) {\n")
+    edit(tc,
+         "    // if needed.\n"
+         "    ResetTextureBindings();\n"
+         "  }\n\n"
+         "  // [sr] each frame's first draws look at every binding again (CheckDynamicRange)\n",
+         "    // if needed.\n"
+         "    if (REXCVAR_GET(gpu_texture_slot_reset)) {\n"
+         "      // [perf] only the bindings holding a texture outdated now: the others' would come back the same\n"
+         "      uint32_t bindings_reset = 0;\n"
+         "      for (size_t i = 0; i < texture_bindings_.size(); ++i) {\n"
+         "        TextureBinding& binding = texture_bindings_[i];\n"
+         "        if (!binding.key.is_valid) continue;\n"
+         "        if (!(binding.texture && binding.texture->outdated_mask()) &&\n"
+         "            !(binding.texture_signed && binding.texture_signed->outdated_mask())) {\n"
+         "          continue;\n"
+         "        }\n"
+         "        binding.Reset();\n"
+         "        bindings_reset |= UINT32_C(1) << i;\n"
+         "      }\n"
+         "      texture_bindings_in_sync_ &= ~bindings_reset;\n"
+         "      if (bindings_reset) UpdateTextureBindingsImpl(bindings_reset);\n"
+         "    } else {\n"
+         "      ResetTextureBindings();\n"
+         "    }\n"
+         "  }\n\n"
+         "  // [sr] each frame's first draws look at every binding again (CheckDynamicRange)\n")
 
 
 if __name__ == "__main__":
