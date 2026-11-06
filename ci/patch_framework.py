@@ -1334,8 +1334,9 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     # game started (InitializeShaderStorage blocks the launch), one storage
     # that grows every session: 40 s and more of black screen at 5 a second.
     # With async_shader_compilation they go to the creation threads instead
-    # (lowest priority) while the game starts; one drawn before it's built gets
-    # what a new one gets: the placeholder at once, the real one queued.
+    # (lowest priority) while the game starts; one drawn before it's built is
+    # queued as a new one is, its draws skipped until it's ready (no placeholder:
+    # see the note further down).
     vpc2 = sdk / "src" / "graphics" / "vulkan" / "pipeline_cache.cpp"
     edit(vpc2,
          "  if (!pipeline_creations.empty()) {\n"
@@ -3377,6 +3378,18 @@ class SrSubmitThread {
          "                               std::chrono::steady_clock::now() - sr_wait_start).count()));\n"
          "\n  return true;\n}\n\nbool CommandProcessor::ExecutePacketType3_REG_RMW(")
 
+    # [sr] XMPGetInfo (the music player's "what's playing", which both games ask a few times a
+    # second) is implemented, but logged as an ERROR on every call: 24926 lines in sr1_027.1, 28549
+    # in sr2_009.1, most of each log. The first 3, then every 10000th.
+    edit(sdk / "src" / "kernel" / "xam" / "apps" / "xmp_app.cpp",
+         "#include <rex/logging.h>\n", "#include <atomic>  // [sr]\n#include <rex/logging.h>\n")
+    edit(sdk / "src" / "kernel" / "xam" / "apps" / "xmp_app.cpp",
+         "      REXKRNL_ERROR(\"XMPGetInfo?({:08X}, {:08X})\", uint32_t(args->unk_ptr),\n"
+         "                    uint32_t(args->info_ptr));\n",
+         "      static std::atomic<uint32_t> sr_xmp_info_calls{0};  // [sr] (was an error every call)\n"
+         "      if (const uint32_t n = sr_xmp_info_calls.fetch_add(1); n < 3 || n % 10000 == 0)\n"
+         "        REXKRNL_INFO(\"XMPGetInfo #{} ({:08X}, {:08X})\", n, uint32_t(args->unk_ptr),\n"
+         "                     uint32_t(args->info_ptr));\n")
     draw_profile(sdk)
     # Constant writes that change no value invalidate nothing (gpu_skip_unchanged_writes, from MGR).
     skip_unchanged_writes(sdk)
