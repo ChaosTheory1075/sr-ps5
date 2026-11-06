@@ -3257,6 +3257,7 @@ class SrSubmitThread {
     skip_unchanged_writes(sdk)
     texture_request_counts(sdk)
     texture_slot_reset(sdk)
+    draw_profile_detail(sdk)
 
 def draw_profile(sdk):
     """(From Metal Gear Rising: Revengeance mgr-ps5 6b7d5c1.) What one draw costs on the GPU command thread (cvar gpu_draw_profile, rex/<port>_perf.h).
@@ -3573,6 +3574,44 @@ def texture_slot_reset(sdk):
          "    }\n"
          "  }\n\n"
          "  // [sr] each frame's first draws look at every binding again (CheckDynamicRange)\n")
+
+
+def draw_profile_detail(sdk):
+    """The draw profile's "record" and "the rest" split further (timing and counts only; 2026-11-06).
+
+    "record" ran from the draw command to IssueDraw's end, so it also held the memexport work: each
+    memexporting draw marks its ranges GPU-written, and one whose ranges are unknown marks ALL guest
+    memory (RangeWrittenByGpu(0, kBufferSize)). D2's record swings 0.85-2.33 us a draw, as a few costly
+    draws would. "the rest" held both IssueDraw's start (shader analysis) and the setup before texture
+    requests. New steps kDrawStart and kMemExport, and counts of memexporting draws and of
+    whole-memory invalidations, on the line "draw cost detail". Nothing the GPU draws changes.
+    """
+    P = "rex::sr_perf::"
+    vcp = sdk / "src" / "graphics" / "vulkan" / "command_processor.cpp"
+    edit(vcp,
+         f"  {P}DrawPhases sr_dp(REXCVAR_GET(gpu_draw_profile));  // [perf] the draw profile\n",
+         f"  {P}DrawPhases sr_dp(REXCVAR_GET(gpu_draw_profile));  // [perf] the draw profile\n"
+         f"  sr_dp.To({P}kDrawStart);  // [perf] (IssueDraw's start, apart from the setup)\n")
+    edit(vcp,
+         "  // Invalidate textures in memexported memory and watch for changes.\n"
+         "  if (!memexport_ranges_.empty()) {\n",
+         f"  sr_dp.To({P}kMemExport);  // [perf]\n"
+         "  // Invalidate textures in memexported memory and watch for changes.\n"
+         f"  if (memexport_writes_possible) {P}CountOnGpuThread({P}kMemExportDraws);  // [perf] count only\n"
+         "  if (!memexport_ranges_.empty()) {\n")
+    edit(vcp,
+         "    shared_memory_->RangeWrittenByGpu(0, SharedMemory::kBufferSize);\n",
+         f"    {P}CountOnGpuThread({P}kMemExportAll);  // [perf] count only\n"
+         "    shared_memory_->RangeWrittenByGpu(0, SharedMemory::kBufferSize);\n")
+    edit(vcp,
+         "          // [perf] what texture requests did (count only)\n",
+         "          // [perf] record and the rest, split\n"
+         "          REXGPU_INFO(\"draw cost detail (us a draw): start {:.2f}, setup {:.2f}, draw commands {:.2f}, \"\n"
+         "                      \"memexport {:.2f}; memexporting draws {:.1f} a frame, {:.1f} of them invalidating all \"\n"
+         "                      \"memory\",\n"
+         "                      st[kDrawStart] * per, st[kDrawSetup] * per, st[kRecord] * per, st[kMemExport] * per,\n"
+         "                      n[kMemExportDraws], n[kMemExportAll]);\n"
+         "          // [perf] what texture requests did (count only)\n")
 
 
 if __name__ == "__main__":

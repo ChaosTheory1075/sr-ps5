@@ -41,6 +41,10 @@ enum Counter : uint32_t {
   kTexSlots,      // (count only) texture slots the draws' shaders use
   kTexRecheck,    // (count only) ... of them not in sync: fetch constant re-read, key re-derived
   kTexReset,      // (count only) every binding reset: a texture outdated by a CPU write
+  kDrawStart,     // in draws: IssueDraw's start (shader analysis), before primitives
+  kMemExport,     // in draws: after the draw command (memexport invalidation and readback)
+  kMemExportDraws,  // (count only) draws whose shaders may memexport
+  kMemExportAll,  // (count only) ... of them with unknown ranges: all guest memory marked GPU-written
   kCount
 };
 
