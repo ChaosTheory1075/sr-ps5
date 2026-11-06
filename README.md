@@ -18,6 +18,7 @@ Xbox 360.
 - Both games' achievements as PS5-style trophies, with their own page in the menu
 - Installs the discs and the DLC from your own files, at the drive's full speed
 - Imports your Xbox 360 saves, backs up and restores saves
+- Bug reports from the PS5: SAVES > SEND LOGS uploads the logs and shows a QR code for a GitHub issue
 - A menu with HOME, CONTENT, SAVES, SETTINGS, TROPHIES and CREDITS pages, each game's own art and
   music
 
@@ -73,6 +74,8 @@ menu's and home screen's art from your own pictures.
 - **BlackBearReloaded**: the PS5 AT9 Converter (the home screen music)
 - Built with the PS5 Payload SDK, Mesa RADV, Dear ImGui, stb_image, dr_mp3, zlib, xxHash, and the
   Oswald, Inter and Pirata One fonts (SIL Open Font License)
+- For SAVES > SEND LOGS: Project Nayuki's QR Code generator (MIT) and, in the logs' payload, libcurl,
+  OpenSSL and zlib
 - Special thanks to **Volition**, for Saints Row
 
 ## License
