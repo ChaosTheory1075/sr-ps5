@@ -3317,6 +3317,66 @@ class SrSubmitThread {
 
 
     # The draw profile (gpu_draw_profile, from MGR): each step of a draw timed, every 10 s.
+    # [sr] (from PROTOTYPE: ReEvolution 4e11118/019d609) WAIT_REG_MEM noticed its value late: past the first 16 polls it slept 1 ms at a time,
+    # woken early only by a vblank (NotifyGuestProgress), so a value the game wrote just after a
+    # poll waited out the rest of that millisecond. Prototype 2 (proto2_015): 27 waits a frame,
+    # 10.5 ms of the GPU thread's 16.7. Now it keeps polling (with yields: the GPU thread has its
+    # own CPU) for up to sr_wait_spin_us before sleeping, so the wait ends when the value is
+    # written. Same result, sooner. And where the time goes, in the log every ~10000 waits: the
+    # five places waited on longest (register or memory address, how often, how long).
+    cpc = sdk / "src" / "graphics" / "command_processor.cpp"
+    edit(cpc, 'REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");\n',
+         'REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");\n'
+         'REXCVAR_DEFINE_INT32(sr_wait_spin_us, 2000, "GPU",  // [sr]\n'
+         '                     "WAIT_REG_MEM keeps polling (yielding) this long before it sleeps 1 ms at a time "\n'
+         '                     "(0: the 16 polls of before)");\n'
+         '#include <chrono>  // [sr]\n'
+         'namespace {\n'
+         'struct SrWaitSite {  // (the GPU thread\'s only)\n'
+         '  uint32_t addr = 0;\n'
+         '  bool memory = false;\n'
+         '  uint64_t count = 0, ns = 0;\n'
+         '};\n'
+         'SrWaitSite sr_wait_sites[16];\n'
+         'uint64_t sr_wait_total = 0;\n'
+         'void SrNoteWait(uint32_t addr, bool memory, uint64_t ns) {\n'
+         '  SrWaitSite* s = nullptr;\n'
+         '  for (auto& w : sr_wait_sites) {\n'
+         '    if (w.count && w.addr == addr && w.memory == memory) { s = &w; break; }\n'
+         '    if (!w.count) { s = &w; s->addr = addr, s->memory = memory; break; }\n'
+         '  }\n'
+         '  if (s) ++s->count, s->ns += ns;\n'
+         '  if (++sr_wait_total % 10000) return;\n'
+         '  SrWaitSite top[16];\n'
+         '  std::copy(std::begin(sr_wait_sites), std::end(sr_wait_sites), top);\n'
+         '  std::sort(std::begin(top), std::end(top), [](const SrWaitSite& a, const SrWaitSite& b) { return a.ns > b.ns; });\n'
+         '  std::string out;\n'
+         '  for (int i = 0; i < 5 && top[i].count; ++i)\n'
+         '    out += fmt::format("{}{} {:08X}: {} waits, {:.1f} ms", i ? "; " : "", top[i].memory ? "memory" : "register",\n'
+         '                       top[i].addr, top[i].count, top[i].ns / 1e6);\n'
+         '  REXGPU_INFO("sr: WAIT_REG_MEM, the last 10000 waits that waited: {}", out);\n'
+         '  for (auto& w : sr_wait_sites) w = SrWaitSite{};\n'
+         '}\n'
+         '}  // namespace\n')
+    edit(cpc, "  bool sr_wrote_back = false;  // [sr]\n",
+         "  bool sr_wrote_back = false;  // [sr]\n"
+         "  const auto sr_wait_start = std::chrono::steady_clock::now();\n"
+         "  const auto sr_spin = std::chrono::microseconds(REXCVAR_GET(sr_wait_spin_us));\n"
+         "  bool sr_waited = false;\n")
+    edit(cpc,
+         "        if (unmatched_poll_count < kYieldPollCount || !REXCVAR_GET(vsync)) {\n",
+         "        sr_waited = true;\n"
+         "        if (unmatched_poll_count < kYieldPollCount || !REXCVAR_GET(vsync) ||\n"
+         "            std::chrono::steady_clock::now() - sr_wait_start < sr_spin) {\n")
+    edit(cpc,
+         "  } while (!matched);\n\n  return true;\n}\n\nbool CommandProcessor::ExecutePacketType3_REG_RMW(",
+         "  } while (!matched);\n"
+         "  if (sr_waited)\n"
+         "    SrNoteWait(poll_reg_addr, is_memory,\n"
+         "                  uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(\n"
+         "                               std::chrono::steady_clock::now() - sr_wait_start).count()));\n"
+         "\n  return true;\n}\n\nbool CommandProcessor::ExecutePacketType3_REG_RMW(")
+
     draw_profile(sdk)
     # Constant writes that change no value invalidate nothing (gpu_skip_unchanged_writes, from MGR).
     skip_unchanged_writes(sdk)
