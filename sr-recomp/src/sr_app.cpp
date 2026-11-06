@@ -345,11 +345,15 @@ void SrApp::OnPreSetup(rex::RuntimeConfig& config) {
   if (!rex::cvar::HasNonDefaultValue("ps5_hang_reports")) rex::cvar::SetLaunchFlag("ps5_hang_reports", "false");
   // (the draw profile, as MGR: each step of a draw timed, the "draw cost" line every 10 s)
   if (!rex::cvar::HasNonDefaultValue("gpu_draw_profile")) rex::cvar::SetLaunchFlag("gpu_draw_profile", "true");
-  // (constant writes that change no value invalidate nothing, as MGR 45528e6: OFF in the player's
-  // build. Driver SF's picture broke overnight with it switching on and off every 10 s (supervisor
-  // order 2026-11-06, Recomps\PERF-COLLECTIVE.md); it is measured only in a separate test build.)
+  // (constant writes that change no value invalidate nothing, as MGR 45528e6; on, never toggling.
+  // Proven before it went in, 2026-11-06: (1) in code, every cache those writes invalidate - the
+  // float / bool-loop / fetch constant buffers, the texture bindings' keys, the vertex buffers'
+  // residency - is rebuilt from the same register values, and no path stores constants without
+  // going through the compare; (2) on the PC, the same skip in Xenia Canary's trace dump replayed
+  // three console frames (The Darkness II) with 65-75% of constant writes skipped, and each frame's
+  // picture came out byte-identical to the one without it (Extras/tmp/skipproof.sh).)
   if (!rex::cvar::HasNonDefaultValue("gpu_skip_unchanged_writes"))
-    rex::cvar::SetLaunchFlag("gpu_skip_unchanged_writes", "0");
+    rex::cvar::SetLaunchFlag("gpu_skip_unchanged_writes", "1");
 #if SR_GAME == 2
   // Saints Row 2's Bink cutscenes are frames the GPU resolves into textures: read back into guest
   // memory ("fast": a frame late) so a reload of those pages from guest memory brings back the
