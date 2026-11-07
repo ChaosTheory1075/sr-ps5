@@ -974,18 +974,19 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "template <typename T>\n"
          "void SrCapPut(const T& v) {\n  SrCapWrite(&v, sizeof(v));\n}\n"
          "bool SrCapActive(uint64_t frame) {\n"
-         "  const auto now = std::chrono::steady_clock::now();\n"
-         "  if (sr_cap.start == std::chrono::steady_clock::time_point{}) sr_cap.start = now;\n"
-         "  if (sr_cap.file && frame != sr_cap.frame) {\n"
-         "    std::fclose(sr_cap.file);\n    sr_cap.file = nullptr;\n"
-         "    REXGPU_INFO(\"sr capture: frame {} written ({} records)\", sr_cap.frame, sr_cap.seq);\n"
-         "  }\n"
          "  // (only with logs/capture.txt: a capture holds its frame up)\n"
          "  static const bool enabled = [] {\n"
          "    std::FILE* f = std::fopen(\"/app0/logs/capture.txt\", \"rb\");\n"
          "    if (f) std::fclose(f);\n"
          "    return f != nullptr;\n"
          "  }();\n"
+         "  if (!enabled) return false;  // (no clock read a draw without it: draw_start_waste)\n"
+         "  const auto now = std::chrono::steady_clock::now();\n"
+         "  if (sr_cap.start == std::chrono::steady_clock::time_point{}) sr_cap.start = now;\n"
+         "  if (sr_cap.file && frame != sr_cap.frame) {\n"
+         "    std::fclose(sr_cap.file);\n    sr_cap.file = nullptr;\n"
+         "    REXGPU_INFO(\"sr capture: frame {} written ({} records)\", sr_cap.frame, sr_cap.seq);\n"
+         "  }\n"
          "  if (!sr_cap.file && enabled && sr_cap.taken < std::size(kSrCaptureSeconds)) {\n"
          "    const auto seconds =\n"
          "        std::chrono::duration_cast<std::chrono::seconds>(now - sr_cap.start).count();\n"
@@ -3225,6 +3226,7 @@ class SrSubmitThread {
     # texture_request_counts(sdk) and draw_profile_detail(sdk) are not applied in the user's build (no
     # profiling, as MGR 4292ac5): counts and timing for the draw profile only, which stays off.
     texture_slot_reset(sdk)
+    draw_start_waste(sdk)
 
 def draw_profile(sdk):
     """(From Metal Gear Rising: Revengeance mgr-ps5 6b7d5c1.) What one draw costs on the GPU command thread (cvar gpu_draw_profile, rex/<port>_perf.h).
@@ -3579,6 +3581,22 @@ def draw_profile_detail(sdk):
          "                      st[kDrawStart] * per, st[kDrawSetup] * per, st[kRecord] * per, st[kMemExport] * per,\n"
          "                      n[kMemExportDraws], n[kMemExportAll]);\n"
          "          // [perf] what texture requests did (count only)\n")
+
+
+def draw_start_waste(sdk):
+    """Two per-draw costs that do nothing in play (2026-11-07). The console's draw profile (sr1_040)
+    had IssueDraw's start at 1.07 us and its memexport tail at 0.19 us a draw, with no memexporting
+    draws: every draw asked IsReadbackMemexportEnabled, which takes the cvar registry's mutex, builds
+    a std::string, looks it up in a map and compares two more strings; now memexport_ranges_ (empty
+    unless the draw memexports) is tested first. And SrCapActive read the clock every draw (on the PS5
+    a system call) even without logs/capture.txt. Nothing drawn changes.
+    """
+    vcp = sdk / "src" / "graphics" / "vulkan" / "command_processor.cpp"
+    edit(vcp,
+         "  if (IsReadbackMemexportEnabled(REXCVAR_GET(vulkan_readback_memexport)) &&\n"
+         "      !memexport_ranges_.empty()) {\n",
+         "  if (!memexport_ranges_.empty() &&  // [sr] the cheap test first (draw_start_waste)\n"
+         "      IsReadbackMemexportEnabled(REXCVAR_GET(vulkan_readback_memexport))) {\n")
 
 
 if __name__ == "__main__":
