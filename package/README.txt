@@ -40,9 +40,6 @@ CONTENT   Saints Row, Saints Row 2 (each with its title update), the DLC
           triangle (twice) uninstalls it.
 SAVES     BACK UP SAVES (to install/backups/), IMPORT an Xbox 360 save
           package from install/, RESTORE one of the backups.
-          SEND LOGS: type what went wrong; the logs (PPSA54107/logs/) go to
-          catbox.moe, and a QR code opens a GitHub issue with it filled in
-          (needs the internet and the payload loader).
 SETTINGS  FRAME RATE        30, as on the Xbox 360, or 60 (experimental:
                             both games run twice as often where the PS5
                             keeps up; set it back to 30 if anything plays
@@ -113,8 +110,7 @@ Built on elripalda's GTA IV for PS5 (github.com/elripalda/gta4-ps5), saulob's
 Crackdown Recompiled (github.com/saulob/crackdown-xbox360-recompiled), OZORDI's
 Liberty Recompiled and vaduur's LibertyRecompAndroid, ReXGlue and Xenia.
 Hover music made with BlackBearReloaded's PS5 AT9 Converter. Title lettering in
-Pirata One (SIL Open Font License). SEND LOGS: Project Nayuki's QR Code
-generator (MIT); in the logs' payload, libcurl, OpenSSL and zlib.
+Pirata One (SIL Open Font License).
 Special thanks to Volition, for Saints Row.
 
 Saints Row and all related names belong to their owners. This project is not

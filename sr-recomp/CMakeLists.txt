@@ -19,7 +19,7 @@ function(sr_game game)
         # own sound mixer for its song.
         set(GTA4_PS5_SRC "${REXSDK_DIR}/gta4-recomp/src/ps5")
         set(SR_PS5_FONTS "${REXSDK_DIR}/../../ps5/assets/fonts")
-        list(APPEND app_sources src/ps5/sr_menu.cpp src/ps5/qrcodegen/qrcodegen.cpp src/ps5/sr_install.cpp src/ps5/sr_trophies.cpp
+        list(APPEND app_sources src/ps5/sr_menu.cpp src/ps5/sr_install.cpp src/ps5/sr_trophies.cpp
              src/ps5/sr_trophies_game.cpp src/ps5/sr_overlay.cpp src/ps5/sr_dualsense.cpp src/ps5/sr_prompts.cpp
              src/ps5/sr_lua.cpp src/ps5/sr_quick_menu.cpp src/ps5/sr_intro.cpp
              src/ps5/sr_textures_install.cpp
