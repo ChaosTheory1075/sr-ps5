@@ -3016,9 +3016,10 @@ class SrSubmitThread {
     # lane's twin, empty until now) while the GPU thread goes on with the next submission's draws.
     # The queue sees the same order as before: anyone else acquiring it (the presenter, sparse
     # binds) first waits for the thread to be empty, and the GPU thread never waits on or polls
-    # a fence the thread hasn't submitted yet. OFF by default (supervisor order 2026-11-06: Driver SF's
-    # picture broke with it on, and its ordering against resolves / EDRAM copies isn't proven in code);
-    # sr_submit_thread = true turns it on in a test build.
+    # a fence the thread hasn't submitted yet. ON by default (2026-11-07): Driver SF's picture break was
+    # its FAST renderer (dsf LOOP.md 21:30); its accepted run dsf_021 had this thread on, with "submit"
+    # 0.0 ms on the GPU thread (3-5.5 before). On the PC replay (Extras/tmp/replay) every EDRAM byte of
+    # three recorded frames is the same with it on or off. sr_submit_thread = false turns it off.
     vk = sdk / "include" / "rex" / "ui" / "vulkan" / "device.h"
     edit(vk, "class VulkanDevice {\n",
          "// [sr] (set by the submit thread, command_processor.cpp: called before a queue is acquired\n"
@@ -3076,7 +3077,7 @@ class SrSubmitThread {
          "#include <mutex>\n#include <condition_variable>  // [sr] (the submit thread)\n#include <deque>\n"
          "#include <thread>\n#include <string>\n")
     edit(cp, 'REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",\n',
-         'REXCVAR_DEFINE_BOOL(sr_submit_thread, false, "GPU/Vulkan",\n'
+         'REXCVAR_DEFINE_BOOL(sr_submit_thread, true, "GPU/Vulkan",\n'
          '                    "[sr] Replay and submit each submission\'s Vulkan commands on a thread of "\n'
          '                    "its own (CPU 5) while the GPU thread goes on with the next draws");\n\n'
          'REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",\n')
