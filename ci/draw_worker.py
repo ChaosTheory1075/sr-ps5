@@ -96,6 +96,11 @@ def draw_worker(sdk, edit):
          "                sizeof(uint32_t) * register_count);\n"
          "    SrRegsWritten(first_register, register_count);  " + GUARD + "\n")
 
+    # the PS5 thread list: the worker keeps its CPU (the 10 s re-pinning leaves it alone)
+    diag = sdk / "src" / "core" / "ps5_diag.cpp"
+    if diag.exists():
+        edit(diag, '!std::strcmp(e.what, "gpu submit"))',
+             '!std::strcmp(e.what, "gpu submit") || !std::strcmp(e.what, "gpu draw worker"))')
     # ---- Vulkan command processor: header
     edit(vh, "#include <rex/graphics/xenos.h>\n#include <rex/hash.h>\n",
          "#include <rex/graphics/xenos.h>\n#include <rex/hash.h>\n#include <rex/sr_perf.h>  " + GUARD + "\n#include <atomic>\n")
