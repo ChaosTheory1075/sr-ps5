@@ -3227,6 +3227,10 @@ class SrSubmitThread {
     # profiling, as MGR 4292ac5): counts and timing for the draw profile only, which stays off.
     texture_slot_reset(sdk)
     draw_start_waste(sdk)
+    # Draws on two cores (sr_draw_worker; ci/draw_worker.py, Extras/MT-DRAW-LOOP.md).
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from draw_worker import draw_worker
+    draw_worker(sdk, edit)
 
 def draw_profile(sdk):
     """(From Metal Gear Rising: Revengeance mgr-ps5 6b7d5c1.) What one draw costs on the GPU command thread (cvar gpu_draw_profile, rex/<port>_perf.h).
