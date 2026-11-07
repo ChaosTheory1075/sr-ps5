@@ -1243,7 +1243,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     edit(vcp,
          "                                       bool major_mode_explicit) {\n",
          "                                       bool major_mode_explicit) {\n"
-         "  rex::sr_perf::g_n[rex::sr_perf::kDraw].fetch_add(1, std::memory_order_relaxed);\n")
+         "  rex::sr_perf::CountOnGpuThread(rex::sr_perf::kDraw);  // (GPU thread only: a plain add)\n")
     edit(vcp,
          "bool VulkanCommandProcessor::IssueCopy() {\n",
          "bool VulkanCommandProcessor::IssueCopy() {\n"
@@ -1387,8 +1387,13 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     # in <cache>/shaders, as gta4-ps5's own renderer keeps one): without it
     # every session compiled every pipeline again, and the stutters in
     # gameplay were those compiles (sr_008.log: each drop a burst of
-    # "Creating graphics pipeline state"). Saved from the GPU thread's 10 s
-    # report when new pipelines were made, written on a thread of its own.
+    # "Creating graphics pipeline state"). Loaded at start, NEVER saved in play (as MGR 70795c4):
+    # the periodic save (vkGetPipelineCacheData of the 8-18 MB cache + a write to the USB drive)
+    # was a hitch, and pinning its thread off CPU 0 (650da83) didn't remove it in MGR (mgr_026
+    # 17:24:19, 301 ms, 0.43 s before "cache saved"); SR2 had the same one (sr2_009.1 17:08:34.662,
+    # 261 ms, 0.36 s before "saved (8445 KB)"). Pipelines made since are kept by RADV's own disk
+    # cache (radv-shader-cache, small incremental writes), so the next session's creations of them
+    # are cache hits; their descriptions are still stored by the storage write thread (.xpso).
     edit(vpc2,
          "namespace rex::graphics::vulkan {\n",
          "namespace rex::graphics::vulkan {\n\n"
@@ -1397,8 +1402,6 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "VkPipelineCache sr_vk_cache = VK_NULL_HANDLE;\n"
          "const ui::vulkan::VulkanDevice* sr_vk_cache_device = nullptr;\n"
          "std::string sr_vk_cache_path;\n"
-         "std::atomic<uint32_t> sr_vk_cache_new{0};\n"
-         "std::atomic<bool> sr_vk_cache_saving{false};\n"
          "void SrOpenPipelineCache(const ui::vulkan::VulkanDevice* device, const std::filesystem::path& path) {\n"
          "  if (sr_vk_cache != VK_NULL_HANDLE || !device) return;\n"
          "  std::vector<uint8_t> data;\n"
@@ -1428,52 +1431,9 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "              data.size() >> 10, sr_vk_cache_path);\n"
          "}\n"
          "}  // namespace\n\n"
-         "// From the GPU thread's 10 s report: saved when pipelines were made since.\n"
-         "void SrSavePipelineCache() {\n"
-         "  // (at most once a minute, and all of it on a thread of its own: reading the\n"
-         "  // 13-18 MB cache on the GPU thread every 10 s was a hitch in itself)\n"
-         "  static uint32_t reports = 0;\n"
-         "  if (sr_vk_cache == VK_NULL_HANDLE || !sr_vk_cache_new.load() || ++reports < 6) return;\n"
-         "  if (sr_vk_cache_saving.exchange(true)) return;\n"
-         "  reports = 0;\n"
-         "  const uint32_t made = sr_vk_cache_new.exchange(0);\n"
-         "  std::thread([made]() {\n"
-         "#if defined(__PROSPERO__)\n"
-         "    // (off CPU 0, as Stranglehold 8048d4d: a new thread keeps its creator's CPUs, and the GPU\n"
-         "    // thread that starts this one has CPU 0 to itself. Reading out the 8-18 MB cache there held\n"
-         "    // the GPU thread off its CPU: sr2_009.1 17:08:34.662, a 261 ms hitch with 13 ms of it\n"
-         "    // accounted for, 0.36 s before \"saved (8445 KB)\". Now on the other threads' CPUs, 2-3 and\n"
-         "    // 6-12, the mask KeepOtherThreadsOn gives them.)\n"
-         "    rex::frame_stats::scePthreadSetaffinity(pthread_self(), 0x1FCC);\n"
-         "#endif\n"
-         "    const auto& dfn = sr_vk_cache_device->functions();\n"
-         "    size_t size = 0;\n"
-         "    std::vector<uint8_t> data;\n"
-         "    if (dfn.vkGetPipelineCacheData(sr_vk_cache_device->device(), sr_vk_cache, &size, nullptr) == VK_SUCCESS &&\n"
-         "        size) {\n"
-         "      data.resize(size);\n"
-         "      if (dfn.vkGetPipelineCacheData(sr_vk_cache_device->device(), sr_vk_cache, &size, data.data()) !=\n"
-         "          VK_SUCCESS)\n"
-         "        data.clear();\n"
-         "      data.resize(std::min(size, data.size()));\n"
-         "    }\n"
-         "    bool ok = false;\n"
-         "    if (!data.empty()) {\n"
-         "      const std::string tmp = sr_vk_cache_path + \".tmp\";\n"
-         "      if (std::FILE* f = std::fopen(tmp.c_str(), \"wb\")) {\n"
-         "        ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();\n"
-         "        ok = std::fclose(f) == 0 && ok;\n"
-         "      }\n"
-         "      if (ok) ok = std::rename(tmp.c_str(), sr_vk_cache_path.c_str()) == 0;\n"
-         "    }\n"
-         "    REXGPU_INFO(\"sr: Vulkan pipeline cache saved ({} KB, {} new pipelines){}\", data.size() >> 10, made,\n"
-         "                ok ? \"\" : \" - FAILED\");\n"
-         "    sr_vk_cache_saving.store(false);\n"
-         "  }).detach();\n"
-         "}\n")
+         "")
     edit(vpc2, "#include <algorithm>\n",
-         "#include <algorithm>\n#include <cstdio>\n#include <filesystem>\n#include <thread>\n"
-         "#include <rex/frame_stats.h>  // [sr] (the cache saver's CPUs)\n")
+         "#include <algorithm>\n#include <cstdio>\n#include <filesystem>\n#include <thread>\n")
     edit(vpc2,
          "  auto shader_storage_root = cache_root / \"shaders\";\n"
          "  auto shader_storage_shareable_root = shader_storage_root / \"shareable\";\n",
@@ -1489,14 +1449,10 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "  VkResult create_result = dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,\n"
          "                                                         &pipeline_create_info, nullptr, &pipeline);\n",
          "  VkResult create_result = dfn.vkCreateGraphicsPipelines(device, sr_vk_cache, 1,\n"
-         "                                                         &pipeline_create_info, nullptr, &pipeline);\n"
-         "  if (create_result == VK_SUCCESS && sr_vk_cache != VK_NULL_HANDLE) sr_vk_cache_new.fetch_add(1);\n")
-    edit(vcp,
-         "      last_us = now;\n      frames = 0;\n    }\n  }\n",
-         "      last_us = now;\n      frames = 0;\n      SrSavePipelineCache();  // (pipeline_cache.cpp)\n    }\n  }\n")
+         "                                                         &pipeline_create_info, nullptr, &pipeline);\n")
     edit(vcp,
          "namespace rex::graphics::vulkan {\n\nnamespace {\n",
-         "namespace rex::graphics::vulkan {\n\nvoid SrSavePipelineCache();  // [sr] pipeline_cache.cpp\n\nnamespace {\n")
+         "namespace rex::graphics::vulkan {\n\n// [sr] the pipeline cache: loaded at start, never saved in play (pipeline_cache.cpp)\n\nnamespace {\n")
 
     # The pipeline description storage (<title>.fsi.vk.xpso) held 229 pipelines
     # in every session since the first ones, though each session made new ones
@@ -2851,7 +2807,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "                break;\n")
 
 
-    SR_SUBMIT_THREAD_CLASS = r"""void SrSavePipelineCache();  // [sr] pipeline_cache.cpp
+    SR_SUBMIT_THREAD_CLASS = r"""// [sr] the pipeline cache: loaded at start, never saved in play (pipeline_cache.cpp)
 
 // [sr] The submit thread (see ci/patch_framework.py): a submission's recorded commands are
 // replayed into its Vulkan command buffer and submitted here, in order, while the GPU thread
@@ -3124,7 +3080,7 @@ class SrSubmitThread {
          '                    "[sr] Replay and submit each submission\'s Vulkan commands on a thread of "\n'
          '                    "its own (CPU 5) while the GPU thread goes on with the next draws");\n\n'
          'REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",\n')
-    edit(cp, "void SrSavePipelineCache();  // [sr] pipeline_cache.cpp\n",
+    edit(cp, "// [sr] the pipeline cache: loaded at start, never saved in play (pipeline_cache.cpp)\n",
          SR_SUBMIT_THREAD_CLASS)
     edit(cp, "  GpuLane::Get().Drain();  // [crackdown]\n  AwaitAllQueueOperationsCompletion();\n",
          "  GpuLane::Get().Drain();  // [crackdown]\n"
@@ -3265,9 +3221,9 @@ class SrSubmitThread {
     draw_profile(sdk)
     # Constant writes that change no value invalidate nothing (gpu_skip_unchanged_writes, from MGR).
     skip_unchanged_writes(sdk)
-    texture_request_counts(sdk)
+    # texture_request_counts(sdk) and draw_profile_detail(sdk) are not applied in the user's build (no
+    # profiling, as MGR 4292ac5): counts and timing for the draw profile only, which stays off.
     texture_slot_reset(sdk)
-    draw_profile_detail(sdk)
 
 def draw_profile(sdk):
     """(From Metal Gear Rising: Revengeance mgr-ps5 6b7d5c1.) What one draw costs on the GPU command thread (cvar gpu_draw_profile, rex/<port>_perf.h).

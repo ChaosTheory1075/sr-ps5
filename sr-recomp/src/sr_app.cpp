@@ -225,21 +225,33 @@ void SrApp::OnPostLaunchModule(rex::system::XThread* thread) {
   // platform_ps3_us too, whose pictures (ui_ctrl_ps3_btn_cross...) are in the same sheets
   // (interface-backend's ui_bms_01): "ps3" there before the strings are loaded.
   if (auto* kernel = REX_KERNEL_STATE(); kernel && REXCVAR_GET(sr_ps_prompts)) {
+    // Both strings are in the XEX's read-only data, which the loader maps read-only (xex_module.cpp,
+    // XEX_SECTION_READONLY_DATA): a plain memcpy faulted on the console (sr2_010, 2026-11-06, the
+    // first SR2 start since this went in on 11-01). Written as Xenia's patcher does: the page made
+    // writable, the bytes written, its protection put back.
+    auto guest_write = [memory = kernel->memory()](uint32_t address, const char* bytes, uint32_t size) {
+      auto* heap = memory->LookupHeap(address);
+      uint32_t old_protect = 0;
+      if (!heap || !heap->QueryProtect(address, &old_protect)) return false;
+      if (!heap->Protect(address, size, rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite))
+        return false;
+      std::memcpy(memory->TranslateVirtual<char*>(address), bytes, size);
+      heap->Protect(address, size, old_protect);
+      return true;
+    };
     char* name = kernel->memory()->TranslateVirtual<char*>(0x820984B8);
-    if (name && std::memcmp(name, "Xbox360", 8) == 0) {
-      std::memcpy(name, "ps3\0\0\0\0", 8);
+    if (name && std::memcmp(name, "Xbox360", 8) == 0 && guest_write(0x820984B8, "ps3\0\0\0\0", 8)) {
       REXLOG_INFO("Saints Row 2: platform strings platform_ps3 (PlayStation button prompts in text)");
     } else {
-      REXLOG_WARN("Saints Row 2: no \"Xbox360\" at 820984B8: the text keeps the Xbox 360's buttons");
+      REXLOG_WARN("Saints Row 2: no \"Xbox360\" at 820984B8 (or not writable): the text keeps the Xbox 360's buttons");
     }
     // (and the "XBOX360" at 82097240, the scripts' own platform name, as Xenia's "PS3 Button
     // Prompts" patch for TU3 swaps both: the Lua's hard-coded buttons follow it)
     char* lua_name = kernel->memory()->TranslateVirtual<char*>(0x82097240);
-    if (lua_name && std::memcmp(lua_name, "XBOX360", 8) == 0) {
-      std::memcpy(lua_name, "PS3\0\0\0\0", 8);
+    if (lua_name && std::memcmp(lua_name, "XBOX360", 8) == 0 && guest_write(0x82097240, "PS3\0\0\0\0", 8)) {
       REXLOG_INFO("Saints Row 2: script platform name PS3 (PlayStation button prompts in the scripts)");
     } else {
-      REXLOG_WARN("Saints Row 2: no \"XBOX360\" at 82097240: the scripts keep the Xbox 360's buttons");
+      REXLOG_WARN("Saints Row 2: no \"XBOX360\" at 82097240 (or not writable): the scripts keep the Xbox 360's buttons");
     }
   }
 #endif
@@ -343,8 +355,20 @@ void SrApp::OnPreSetup(rex::RuntimeConfig& config) {
   // No stall reports: with the FPS counter's NotePresent wired up, their SIGPROF sampling of every
   // thread fires on every load, and in Crackdown PS5 loads froze right after one (its 58a24b5).
   if (!rex::cvar::HasNonDefaultValue("ps5_hang_reports")) rex::cvar::SetLaunchFlag("ps5_hang_reports", "false");
-  // (the draw profile, as MGR: each step of a draw timed, the "draw cost" line every 10 s)
-  if (!rex::cvar::HasNonDefaultValue("gpu_draw_profile")) rex::cvar::SetLaunchFlag("gpu_draw_profile", "true");
+  // No profiling in the user's build (as MGR 4292ac5, order 2026-11-06): the CPU sampler (SIGPROF to
+  // every registered thread, the game's too, every 10 ms, and a report every 30 s) is off unless
+  // sr1.toml / sr2.toml turns it on; the draw profile ("draw cost", gpu_draw_profile) keeps its
+  // default, off.
+  if (!rex::cvar::HasNonDefaultValue("ps5_cpu_sampler")) rex::cvar::SetLaunchFlag("ps5_cpu_sampler", "false");
+  // A texture outdated by a CPU write resets only the texture bindings holding an outdated texture,
+  // not all of them (ci/patch_framework.py texture_slot_reset). Proven before it went on: (1) in
+  // code, every other binding's full reset re-derives the same key, finds the same current texture
+  // and loads nothing; (2) on the PC, the same change in Xenia Canary's trace dump replayed three
+  // console frames with every other bound texture invalidated every 5 / 25 texture requests (6-82
+  // resets a frame): 0 uses of an outdated texture, and every picture byte-identical to the full
+  // reset's and to the plain replay's (Extras/tmp/slotproof.sh).
+  if (!rex::cvar::HasNonDefaultValue("gpu_texture_slot_reset"))
+    rex::cvar::SetLaunchFlag("gpu_texture_slot_reset", "true");
   // (constant writes that change no value invalidate nothing, as MGR 45528e6; on, never toggling.
   // Proven before it went in, 2026-11-06: (1) in code, every cache those writes invalidate - the
   // float / bool-loop / fetch constant buffers, the texture bindings' keys, the vertex buffers'
