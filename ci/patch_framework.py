@@ -3231,6 +3231,8 @@ class SrSubmitThread {
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     from draw_worker import draw_worker
     draw_worker(sdk, edit)
+    from draw_worker import submit_split
+    submit_split(sdk, edit)
 
 def draw_profile(sdk):
     """(From Metal Gear Rising: Revengeance mgr-ps5 6b7d5c1.) What one draw costs on the GPU command thread (cvar gpu_draw_profile, rex/<port>_perf.h).

@@ -889,3 +889,41 @@ void VulkanCommandProcessor::SrDrawTail(const SrDrawPacket& packet) {
             text = text[:i] + body + text[j:]
         vc.write_text(text)
         print(f"patched  {vc} (draw worker: its functions)")
+
+
+def submit_split(sdk, edit):
+    """[sr] A frame's commands handed to the submit thread in pieces (cvar sr_submit_split_draws, 2026-11-11).
+
+    sr1_048 / sr2_014: the GPU thread waited for the submit thread 146 / 201 ms a second, nearly all of it
+    at the swap, where the presenter needs the frame's last submission queued (g_before_queue_acquire)
+    and that submission held the whole frame: its replay was still running. With a submission ended every
+    N draws (when nothing forbids it: no occlusion query running, no scratch buffer in use, no pipeline
+    being created, under 6 submissions in flight), the submit thread replays each piece while the GPU
+    thread records the next, and at the swap only the last piece is left. A submission's end is what
+    OnPrimaryBufferEnd already does mid-frame; nothing drawn changes.
+    """
+    sdk = pathlib.Path(sdk)
+    vh = sdk / "include" / "rex" / "graphics" / "vulkan" / "command_processor.h"
+    vc = sdk / "src" / "graphics" / "vulkan" / "command_processor.cpp"
+    edit(vh, "  bool sr_worker_on_ = false;\n",
+         "  bool sr_worker_on_ = false;\n"
+         "  uint32_t sr_draws_in_submission_ = 0;  // [sr] submit_split\n")
+    edit(vc, "REXCVAR_DEFINE_BOOL(sr_submit_thread,",
+         "REXCVAR_DEFINE_INT32(sr_submit_split_draws, 1000, \"GPU/Vulkan\",\n"
+         "                     \"[sr] With the submit thread: a submission ended every this many draws, so \"\n"
+         "                     \"the frame's commands are replayed while it's recorded (0: off)\");\n"
+         "REXCVAR_DEFINE_BOOL(sr_submit_thread,")
+    edit(vc, "    submission_open_ = true;\n",
+         "    submission_open_ = true;\n"
+         "    sr_draws_in_submission_ = 0;  // [sr] submit_split\n")
+    edit(vc, "  ++frame_flow_draw_calls_;\n  if (!sr_worker_checked_) {",
+         "  ++frame_flow_draw_calls_;\n"
+         "  {  // [sr] submit_split: the frame so far to the submit thread, in pieces\n"
+         "    const int32_t split = REXCVAR_GET(sr_submit_split_draws);\n"
+         "    if (split > 0 && submission_open_ && ++sr_draws_in_submission_ >= uint32_t(split) &&\n"
+         "        SrSubmitThread::Get().Running() && !active_occlusion_query_.valid &&\n"
+         "        CanEndSubmissionImmediately() && submissions_in_flight_fences_.size() < 6) {\n"
+         "      EndSubmission(false);\n"
+         "    }\n"
+         "  }\n"
+         "  if (!sr_worker_checked_) {")
