@@ -501,15 +501,22 @@ void VulkanCommandProcessor::SrWorkerDrain() {
   ++sr_mirror_checks_;
   // (COHER_STATUS_HOST: the game's CPU writes it, the worker never reads it)
   sr_mirror_->values[XE_GPU_REG_COHER_STATUS_HOST] = register_file_->values[XE_GPU_REG_COHER_STATUS_HOST];
+  // (CP_RB_WPTR, 01C5: the ring's write pointer, which the game's CPU writes too; sr1_046 / sr2_013 had it as
+  // the one register different at every check, and each time every constant buffer was made again for nothing)
+  sr_mirror_->values[XE_GPU_REG_CP_RB_WPTR] = register_file_->values[XE_GPU_REG_CP_RB_WPTR];
   if (std::memcmp(sr_mirror_->values, register_file_->values, sizeof(register_file_->values))) {
     uint32_t first_mismatch = 0, mismatches = 0;
     for (uint32_t i = 0; i < RegisterFile::kRegisterCount; ++i) {
+      // (the two registers the game's CPU writes while this runs don't count: a write between the copy
+      // above and this compare still showed 01C5 in sr1_048, 13 times)
+      if (i == XE_GPU_REG_CP_RB_WPTR || i == XE_GPU_REG_COHER_STATUS_HOST) continue;
       if (sr_mirror_->values[i] != register_file_->values[i]) {
         if (!mismatches++) {
           first_mismatch = i;
         }
       }
     }
+    if (!mismatches) return;  // (only those two: nothing the worker reads was missed)
     if (sr_mirror_mismatches_++ < 20) {
       REXGPU_INFO("sr draw worker: mirror had {} register(s) different, the first {:04X}",
                   mismatches, first_mismatch);

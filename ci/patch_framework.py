@@ -2892,7 +2892,7 @@ class SrSubmitThread {
   void Start(VulkanCommandProcessor* command_processor) {
     command_processor_ = command_processor;
     state_ = REXCVAR_GET(sr_submit_thread) ? kRunning : kOff;
-    REXGPU_INFO("sr submit thread: {}", state_ == kRunning ? "on (CPU 5)" : "off");
+    REXGPU_INFO("sr submit thread: {}", state_ == kRunning ? (REXCVAR_GET(sr_draw_worker) ? "on (CPU 1)" : "on (CPU 5)") : "off");
     if (state_ == kRunning) {
       ui::vulkan::g_before_queue_acquire = [] { SrSubmitThread::Get().Drain(); };
       std::thread([this] { Main(); }).detach();
