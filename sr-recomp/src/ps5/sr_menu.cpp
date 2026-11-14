@@ -156,19 +156,19 @@ class Pad {
 struct Settings {
   bool host_rts = false;       // EXPERIMENTAL RENDERER: FAST (host render targets) or ACCURATE (EDRAM, fsi)
   bool cheat_menu = true;      // L3 + R3 opens the in-game quick menu (sr_quick_menu)
-  int dualsense_strength = 2;  // 1..3: low, medium, high (gta4_sony_intensity)
+  int dualsense_strength = 3;  // 1..3: low, medium, high (gta4_sony_intensity)
   int aa = 2;         // swap_post_effect: 0 none, 1 fxaa, 2 smaa (Max Payne 3 RePrescribed's)
   bool fsr = true;    // the picture's stretch to the TV: FSR 1 (present_effect fsr) or bilinear
   int sharpness = 3;  // FSR 1's sharpening (present_fsr_sharpness_reduction): 1 low, 2 medium, 3 high
-  bool fps60 = false;  // FRAME RATE 60: the guest's vblanks twice as fast (guest_vblank_scale 2)
-  int filter = 3;     // anisotropic_override 2..5: 2x, 4x, 8x, 16x
+  bool fps60 = true;   // FRAME RATE 60: the guest's vblanks twice as fast (guest_vblank_scale 2)
+  int filter = 5;     // anisotropic_override 2..5: 2x, 4x, 8x, 16x
   bool lane = true;   // the GPU's second lane (crackdown_gpu_lane)
   int music = 60;     // the menu song's level, 0..100
   int game = 1;       // the game HOME has chosen: 1 Saints Row, 2 Saints Row 2
   int fps = 0;        // sr_fps_counter: 0 off, 1 simple, 2 detailed
   bool dualsense = true;   // the light bar and R2 (gta4_sony_enabled: sr_dualsense.h)
   bool ps_prompts = true;  // PlayStation button prompts (sr_ps_prompts: sr_prompts.h)
-  bool skip_intro = true;  // the THQ and Volition logo movies (sr_skip_intro: sr_intro.cpp)
+  bool skip_intro = false;  // the THQ and Volition logo movies (sr_skip_intro: sr_intro.cpp)
   bool trees = false;      // Saints Row's high-detail trees at any distance (sr_tree_detail: sr_app.cpp)
   int language = 0;  // LANGUAGE: 0 AUTO (the PS5's own: SystemLanguage), or the Xbox 360's language ID: kLanguages
 
@@ -219,14 +219,18 @@ struct Settings {
 
   // The recommended settings (SQUARE on SETTINGS): the user's own, tested (2026-11-03), the same for
   // both games. The menu's song level and the chosen game stay as they are.
-  static Settings Recommended(const Settings& now) {
+  // A game's defaults, which are also its recommended settings (the author's own, 2026-11-13): SMAA,
+  // FSR 1 at HIGH, 16X, 60, PlayStation prompts; Saints Row on the FAST renderer with high-detail
+  // trees, Saints Row 2 on ACCURATE.
+  static Settings Default(int game) {
     Settings s;
-    s.aa = 2, s.fsr = true, s.sharpness = 3, s.host_rts = false, s.cheat_menu = false, s.dualsense_strength = 3;
-    s.filter = 5, s.lane = true, s.fps = 1, s.dualsense = true, s.ps_prompts = true, s.skip_intro = true;
-    s.fps60 = true, s.language = 0;
+    if (game == 1) s.host_rts = true, s.trees = true;
+    return s;
+  }
+  static Settings Recommended(const Settings& now, int game) {
+    Settings s = Default(game);
     s.music = now.music, s.game = now.game;
     s.cheat_menu = now.cheat_menu;  // (a choice, not a setting to put back: SQUARE leaves it)
-    s.trees = now.trees;
     return s;
   }
 
@@ -714,14 +718,18 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
   // Each game's own: menu1.ini / menu2.ini, and menu.ini, the last started game's (newest: its quick
   // menu writes there). Before there were per-game files, menu.ini was both games'.
   void LoadSettings() {
-    const Settings last = Settings::Load(app_);
+    std::error_code ec;
+    const bool have_last = fs::exists(app_ / "menu.ini", ec);
+    const Settings last = have_last ? Settings::Load(app_) : Settings::Default(1);
     for (int g = 1; g <= 2; ++g) {
       const std::string file = "menu" + std::to_string(g) + ".ini";
-      std::error_code ec;
-      sets_[g] = fs::exists(app_ / file, ec) ? Settings::Load(app_, file.c_str()) : last;
+      // (no file of its own: the older shared menu.ini, or a first start's defaults, each game's own)
+      sets_[g] = fs::exists(app_ / file, ec) ? Settings::Load(app_, file.c_str())
+                 : have_last                 ? last
+                                             : Settings::Default(g);
       sets_[g].game = last.game, sets_[g].music = last.music;
     }
-    sets_[last.game] = last;
+    if (have_last) sets_[last.game] = last;
     // (CHEAT MENU is one switch for both games: on in either game's settings, it's on for both.
     // It was each game's own, and turning it on in Saints Row 2's settings left Saints Row's off.)
     sets_[1].cheat_menu = sets_[2].cheat_menu = sets_[1].cheat_menu || sets_[2].cheat_menu;
@@ -739,7 +747,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
 
   // SQUARE (twice) on SETTINGS: the game's recommended settings back.
   void ResetSettings() {
-    sets_[set_game_] = Settings::Recommended(sets_[set_game_]);
+    sets_[set_game_] = Settings::Recommended(sets_[set_game_], set_game_);
     reset_t_ = time_;
     REXLOG_INFO("SAINTS ROW: ReInstated menu: {}'s recommended settings put back", kGameTitles[set_game_]);
   }
