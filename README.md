@@ -59,14 +59,14 @@ The build runs on Ubuntu 24.04 (WSL works), as root, with your own game files:
 ```bash
 bash tools/local/toolchain.sh   # the PS5 toolchain (ps5-plume-triangle), once
 bash tools/local/framework.sh   # gta4-ps5's framework and the Crackdown PC recomp's patches, once
-SR1_XEX=<Saints Row's default.xex> SR2_XEX=<Saints Row 2's default.xex> \
+SR1_XEX=<Saints Row's default.xex> SR1_XEXP=<its Title Update 1 default.xexp> \
+SR2_XEX=<Saints Row 2's default.xex> SR2_XEXP=<its Title Update 3 default.xexp> \
   bash tools/local/build.sh . <where to put the PPSA54107 folder>
 ```
 
 The build checks the four files by their SHA-1s (`c2646093...`, `b7bc1675...`, `56cba918...`, `cd08ab77...`). It applies
 `ci/pc_patches.py`, `ci/fw_perf_fixes.py`, `ci/patch_framework.py` and `ci/sr_codegen.py` (dcbz
-clears the Xbox 360's whole 128-byte cache line, as Xenia Canary does since it fixed Saints Row's
-collisions) to gta4-ps5's framework, recompiles both games (ReXGlue codegen), builds and signs both
+clears the Xbox 360's whole 128-byte cache line, as Xenia Canary does) to gta4-ps5's framework, recompiles both games (ReXGlue codegen), builds and signs both
 programs and the installer payload, and packages the app folder. `tools/make_sr_art.py` makes the
 menu's and home screen's art from your own pictures.
 
