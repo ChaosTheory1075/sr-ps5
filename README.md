@@ -1,6 +1,6 @@
 # SAINTS ROW: ReInstated
 
-Saints Row (2009) and Saints Row 2 (2012), the Xbox 360 games, recompiled to run natively on the PS5,
+Saints Row (2006) and Saints Row 2 (2008), the Xbox 360 games, recompiled to run natively on the PS5,
 in one app, by ChaosTheory1075.
 
 > Built on [elripalda's GTA IV for PS5](https://github.com/elripalda/gta4-ps5), with GPU and timing
@@ -14,33 +14,39 @@ Xbox 360.
 ## What's in it
 - Saints Row and Saints Row 2, recompiled to run natively on the PS5 (not emulated), in one app: the
   menu's HOME page picks the game
-- Saints Row 2's DLC
-- Both games' achievements as PS5-style trophies, with their own page in the menu
-- Installs the discs and the DLC from your own files, at the drive's full speed
-- Imports your Xbox 360 saves, backs up and restores saves
-- A menu with HOME, CONTENT, SAVES, SETTINGS, TROPHIES and CREDITS pages, each game's own art and
-  music
+- **FSR 1 upscaling to 4K** with a sharpness setting, **SMAA** or FXAA, up to 16x texture filtering
+- **30 FPS** as on the Xbox 360, or an experimental **60 FPS** mode
+- **PlayStation button prompts** in both games (SETTINGS switches back to the Xbox 360's)
+- **Cheat quick menu**: L3 + R3 in game for God Mode, No Police Notoriety, Enemies Ignore You, Clear
+  Notoriety, and in Saints Row 2 Give $10,000 and Show / Hide HUD
+- **Both games' DLC**, both games' achievements as trophies with their own page in the menu
+- **Menus, game text and subtitles in Brazilian Portuguese** (this app's translation), besides the
+  discs' English, French, German, Italian and Spanish; LANGUAGE AUTO follows the PS5
+- DualSense light bar in the Saints' purple, an FPS counter, Skip Intro, full-detail trees (Saints Row)
+- Installs the discs, title updates and DLC from your own files; imports Xbox 360 saves, backs up and
+  restores saves
 
 ## What you need
 - A jailbroken PS5 that runs homebrew apps, with a payload loader on port 9021 (etaHEN or elfldr)
 - Your **own** Saints Row and/or Saints Row 2 for the Xbox 360, as `.iso` files or the discs' files
-- Optional: Saints Row 2's DLC packages
-- No title updates: the app runs the discs' own code
+- Each game's **title update**: the programs are built from it
+- Optional: either game's DLC packages
 
-| | File | Title id |
+| | Files | Title id |
 |---|---|---|
-| Saints Row | `Saints Row (World) (En,Fr,Es,It).iso` (any name) | 4156084E |
-| Saints Row 2 | `Saints Row 2 (USA, Europe).iso` (any name) | 415608A7 |
-| Saints Row 2 DLC | the packages in `415608A7/00000002` | |
+| Saints Row | disc image (any name) + Title Update 1 (`TU_1A521UH_...`, from `545107D1/000B0000`) | 545107D1 |
+| Saints Row 2 | disc image (any name) + Title Update 3 (`TU_1A521VS_...`, from `545107FC/000B0000`) | 545107FC |
+| DLC | the packages in `545107D1/00000002` and `545107FC/00000002` | |
 
 ## Install
 1. Copy the `PPSA54107` folder to the PS5, wherever your homebrew loader looks (`/data/homebrew/`,
-   `/mnt/ext0/homebrew/`, `/mnt/usb0/homebrew/`, ...).
-2. Put your disc images (or the discs' files) and the DLC packages in `PPSA54107/install/`.
+   or `homebrew/` on an external drive).
+2. Put your disc images (or the discs' files), the title updates and any DLC packages in
+   `PPSA54107/install/`.
 3. Open **SAINTS ROW: ReInstated**. It installs everything it finds, one at a time.
 4. When PLAY lights up, you're set.
 
-See [package/README.txt](package/README.txt) for the rest.
+See [package/README.txt](package/README.txt) for the menu, your saves and backups, and updating.
 
 ## How it's put together
 Each game is its own recompiled program: `eboot.bin` holds the menu and Saints Row, `sr2.bin` holds
@@ -57,10 +63,10 @@ SR1_XEX=<Saints Row's default.xex> SR2_XEX=<Saints Row 2's default.xex> \
   bash tools/local/build.sh . <where to put the PPSA54107 folder>
 ```
 
-The build checks the two files by their SHA-1s (`b95f841c...` and `50c1220b...`). It applies
+The build checks the four files by their SHA-1s (`c2646093...`, `b7bc1675...`, `56cba918...`, `cd08ab77...`). It applies
 `ci/pc_patches.py`, `ci/fw_perf_fixes.py`, `ci/patch_framework.py` and `ci/sr_codegen.py` (dcbz
 clears the Xbox 360's whole 128-byte cache line, as Xenia Canary does since it fixed Saints Row's
-collision) to gta4-ps5's framework, recompiles both games (ReXGlue codegen), builds and signs both
+collisions) to gta4-ps5's framework, recompiles both games (ReXGlue codegen), builds and signs both
 programs and the installer payload, and packages the app folder. `tools/make_sr_art.py` makes the
 menu's and home screen's art from your own pictures.
 
