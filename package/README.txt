@@ -44,17 +44,26 @@ SETTINGS  FRAME RATE        30, as on the Xbox 360, or 60 (experimental:
                             both games run twice as often where the PS5
                             keeps up; set it back to 30 if anything plays
                             too fast or stutters).
-          ANTI-ALIASING     off or FXAA.
+          UPSCALING         FSR 1 (AMD's upscaler, up to 4K) or BILINEAR.
+          SHARPNESS         how much FSR 1 sharpens: LOW, MEDIUM or HIGH.
+          ANTI-ALIASING     off, FXAA or SMAA.
           TEXTURE FILTERING 2x to 16x anisotropic.
           GPU HELPER        a second graphics thread (on); turn it off if
                             something draws wrong.
           FPS COUNTER       off, simple or detailed, at the left edge.
-          DUALSENSE FEATURES the light bar dimming as you're hurt, a pulse
-                            when you're hit.
-          LANGUAGE          the games' text: English, French, German,
-                            Italian, Spanish.
+          TREE DETAIL       Saints Row: trees always at full detail.
+          BUTTON PROMPTS    PlayStation or Xbox 360 buttons in the games.
+          DUALSENSE FEATURES the light bar in the Saints' purple.
+          LANGUAGE          AUTO (follows the PS5), English, French,
+                            German, Italian, Spanish, or Portuguese (BR):
+                            this menu and both games' text and subtitles
+                            (this app's translation; voices stay English).
           SKIP INTRO        the games start at their title screens, without
                             the THQ and Volition logo movies.
+          CHEAT MENU        the L3 + R3 quick menu on or off.
+          RENDERER          ACCURATE (the Xbox 360's video memory, exactly)
+                            or FAST (the PS5's own render targets: quicker;
+                            some effects may draw wrong).
           MENU MUSIC        the menu song's level.
 TROPHIES  each game's achievements (triangle: the other game's), earned ones
           first, with their dates (filled in once that game has been started).
