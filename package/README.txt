@@ -53,7 +53,8 @@ SETTINGS  FRAME RATE        30, as on the Xbox 360, or 60 (experimental:
           FPS COUNTER       off, simple or detailed, at the left edge.
           TREE DETAIL       Saints Row: trees always at full detail.
           BUTTON PROMPTS    PlayStation or Xbox 360 buttons in the games.
-          DUALSENSE FEATURES the light bar in the Saints' purple.
+          DUALSENSE FEATURES the light bar in the Saints' purple and the adaptive
+                            triggers (R2 gun, L2 aim on foot; pedals in vehicles).
           LANGUAGE          AUTO (follows the PS5), English, French,
                             German, Italian, Spanish, or Portuguese (BR):
                             this menu and both games' text and subtitles

@@ -22,7 +22,7 @@ Xbox 360.
 - **Both games' DLC**, both games' achievements as trophies with their own page in the menu
 - **Menus, game text and subtitles in Brazilian Portuguese** (this app's translation), besides the
   discs' English, French, German, Italian and Spanish; LANGUAGE AUTO follows the PS5
-- DualSense light bar in the Saints' purple, an FPS counter, Skip Intro, full-detail trees (Saints Row)
+- DualSense light bar in the Saints' purple and adaptive triggers (R2 gun and L2 aim on foot, pedals in vehicles), an FPS counter, Skip Intro, full-detail trees (Saints Row)
 - Installs the discs, title updates and DLC from your own files; imports Xbox 360 saves, backs up and
   restores saves
 
