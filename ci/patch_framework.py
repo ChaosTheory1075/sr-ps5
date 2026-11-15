@@ -2736,7 +2736,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
          "  } else if (slot.game.wanted > 0 && now_ms >= slot.wanted_started_ms) {\n")
     edit(sfb,
          "    if (slot.game.trigger_context == TriggerContext::kVehicle && slot.game.driver) {\n",
-         "    if (slot.game.custom) {  // [sr] R2: the sprint\n"
+         "    if (slot.game.custom && slot.game.trigger_context == TriggerContext::kNone) {  // [sr] R2: the sprint\n"
          "      if (slot.game.sprint > 0) {\n"
          "        const float right = intensity * slot.game.sprint;\n"
          "        output.right = Resistance(20, Force(right));\n"

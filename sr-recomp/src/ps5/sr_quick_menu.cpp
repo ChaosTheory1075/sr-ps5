@@ -92,8 +92,16 @@ void Filter(uint8_t* base, uint32_t state) {
   if (reads.fetch_add(1) == 0) REXLOG_INFO("Quick menu: reading the controller (CHEAT MENU {})", REXCVAR_GET(sr_quick_menu) ? "on" : "off");
   if ((pressed & (kL3 | kR3)) && stick_presses.fetch_add(1) < 20)
     REXLOG_INFO("Quick menu: {}{} pressed (held {:04X})", (pressed & kL3) ? "L3" : "", (pressed & kR3) ? "R3" : "", buttons);
+  // L3 + R3: both held in one read, or the second clicked within half a second of the first (no
+  // run ever showed both in one read: the clicks came a read or more apart, sr1_048 / sr1_040).
+  static uint64_t l3_ms = 0, r3_ms = 0;
+  const uint64_t now = SDL_GetTicks();
+  if (pressed & kL3) l3_ms = now;
+  if (pressed & kR3) r3_ms = now;
   const bool combo = (buttons & (kL3 | kR3)) == (kL3 | kR3);
-  const bool combo_pressed = combo && (pressed & (kL3 | kR3));
+  const bool clicked_both = l3_ms && r3_ms && (l3_ms > r3_ms ? l3_ms - r3_ms : r3_ms - l3_ms) < 500;
+  const bool combo_pressed = (pressed & (kL3 | kR3)) && (combo || clicked_both);
+  if (combo_pressed) l3_ms = r3_ms = 0;
   g_previous = buttons;
   if (!g_open.load(std::memory_order_relaxed)) {
     if (combo_pressed && REXCVAR_GET(sr_quick_menu)) {

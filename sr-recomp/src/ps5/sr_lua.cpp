@@ -297,6 +297,43 @@ extern "C" void sub_829CB0E0(PPCContext& __restrict ctx, uint8_t* base) {
   srps5::OnPcall(ctx, base);
   __imp__sub_829CB0E0(ctx, base);
 }
+// Saints Row 2: lua_resume(co, nargs) (829CE030: luaD_rawrunprotected with the resume callback
+// 829CDCC8, whose errors are "cannot resume dead coroutine" ...). The game's own script API
+// (get_max_hit_points ...) lives in the state that runs the missions as coroutines; the only state
+// that reaches lua_call is the interface's (A9B60040 in every run, "has no get_max_hit_points"), so
+// the cheats never ran. Ours run here, before the resume, on that state's main thread: its global
+// state (+0x10) holds the main thread, found as the thread object (type byte 8 at +4) whose own
+// global state is the same.
+namespace srps5 {
+namespace {
+uint32_t MainThread(uint8_t* base, uint32_t co) {
+  auto get32 = [&](uint32_t at) { return rex::memory::load_and_swap<uint32_t>(base + at); };
+  if (co < 0x10000) return 0;
+  const uint32_t g = get32(co + 0x10);
+  if (g < 0x10000) return 0;
+  static uint32_t cached_g = 0, cached_main = 0;  // (the game thread's)
+  if (g == cached_g) return cached_main;
+  uint32_t main = 0;
+  for (uint32_t off = 0; off < 0x80 && !main; off += 4) {
+    const uint32_t p = get32(g + off);
+    if (p >= 0x10000 && p != g && get32(p + 0x10) == g && base[p + 4] == 8) main = p;
+  }
+  cached_g = g;
+  cached_main = main;
+  REXLOG_INFO("SAINTS ROW: ReInstated: script coroutines' main thread {:08X} (global state {:08X})", main, g);
+  return main;
+}
+}  // namespace
+}  // namespace srps5
+extern "C" void sub_829CE030(PPCContext& __restrict ctx, uint8_t* base) {
+  if (const uint32_t main = srps5::MainThread(base, ctx.r3.u32)) {
+    const uint64_t r3 = ctx.r3.u64;
+    ctx.r3.u64 = main;
+    srps5::OnPcall(ctx, base);
+    ctx.r3.u64 = r3;
+  }
+  __imp__sub_829CE030(ctx, base);
+}
 #endif
 
 #endif  // REX_PLATFORM_PS5
